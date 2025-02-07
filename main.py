@@ -1,9 +1,8 @@
 import discord, os, json
 from discord.ext import commands
-from discord.ui import Modal, TextInput, Button
-from views.base_view import BaseView
+from discord.ui import Modal, TextInput, Button, View
 from config import TOKEN, WELCOME_CHANNEL_ID, CATEGORY_ID
-from replit import db
+from database_handler import save_epic_name_to_database, save_image_to_database
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -16,25 +15,33 @@ async def on_message(message):
     if message.author.bot:
         return
     if isinstance(message.channel, discord.Thread) and message.channel.type == discord.ChannelType.private_thread:
-        if message.channel.parent:
-            parent_channel = message.channel.parent
-            if parent_channel.category and parent_channel.category.id != CATEGORY_ID:
-                return
+        # check if message is in SupportAmar category/context
+        parent_channel = message.channel.parent
+        if parent_channel.category and parent_channel.category.id != CATEGORY_ID:
+            return
         # Check if the message has an attachment (image/video)
         if message.attachments:
+            print(f"Message:{message}")
+            print(f"Attachments:{message.attachments}")
             allowed_file_types = ["image", "video"]
 
             # Check if the attachment is an image or video
             for attachment in message.attachments:
-                if any(file_type in attachment.content_type for file_type in allowed_file_types):
-                    user = message.author
-                    thread = message.channel
-                    print(f" It is a {attachment.content_type} file.")
-                    return  
+                for file_type in allowed_file_types:
+                    if file_type in attachment.content_type:
+                        if file_type == "image":
+                            print(f" It is a {attachment.content_type} file.")
+                            image_url = attachment.url
+                            save_image_to_database(message.author.id, image_url)
+                            return
+                            
+                        if file_type == "video":
+                            print(f" It is a {attachment.content_type} file. TODO: video handling")
+                            return
 
         # If the message is not an image or video, delete it
-        await message.delete()
-        await message.channel.send(f"❌ {message.author.mention}, nur Bilder oder Videos sind erlaubt!", delete_after=5)
+        #await message.delete()
+        await message.channel.send(f"❌ {message.author.mention} schreibe hier bitte nichts, damit der Verlauf clean bleibt (:")
 
 
 @bot.event
@@ -60,6 +67,18 @@ async def on_ready():
         )
         view = Welcome2VerifyView()
         await channel.send(embed=embed, view=view)
+
+
+class BaseView(View):
+    def __init__(self, timeout=None):
+        super().__init__(timeout=timeout)
+
+    async def disable_buttons(self, interaction: discord.Interaction):
+        """Disables all buttons and updates the message."""
+        for child in self.children:  # Iterate through all buttons
+            child.disabled = True
+
+        await interaction.message.edit(view=self)  # Update the message
 
 
 class Welcome2VerifyView(BaseView):
@@ -110,7 +129,7 @@ class Verify2EnterIDView(BaseView):
             await interaction.response.send_message("Du bist nicht berechtigt, dies zu tun.", ephemeral=True)
             return
 
-        await interaction.response.send_modal(EpicIDModal(self.thread, self.user))
+        await interaction.response.send_modal(EpicIDModal(self.thread, self.user, self))
 
 
 class EnterID2ConfirmView(BaseView):
@@ -128,8 +147,10 @@ class EnterID2ConfirmView(BaseView):
         embed = interaction.message.embeds[0]  # Get the first embed
         if embed and embed.description:
             # Extract the Epic Games ID from the description
-            epic_id = embed.description.split("`")[1]  # Extract the text between backticks
-            db[f"epic_{self.user.id}"] = epic_id
+            epic_name = embed.description.split("`")[1]  # Extract the text between backticks
+            discord_id = f"userID_{self.user.id}"
+            save_epic_name_to_database(discord_id, epic_name)
+            
         await interaction.response.send_message("✅ Danke! Deine Epic Games ID wurde bestätigt und gespeichert.", ephemeral=True)
         #await self.thread.send("✅ Deine Epic Games ID wurde gespeichert.")
 
@@ -160,16 +181,16 @@ class EnterID2ConfirmView(BaseView):
         if interaction.user != self.user:
             await interaction.response.send_message("Du bist nicht berechtigt, dies zu tun.", ephemeral=True)
             return
-        await self.disable_buttons(interaction)
 
-        await interaction.response.send_modal(EpicIDModal(self.thread, self.user))
+        await interaction.response.send_modal(EpicIDModal(self.thread, self.user, self))
 
 
 class EpicIDModal(Modal):
-    def __init__(self, thread, user):
+    def __init__(self, thread, user, parent_view):
         super().__init__(title="Gib deine Epic Games ID ein")
         self.thread = thread
         self.user = user
+        self.parent_view = parent_view
         self.text = TextInput(
             label="Gib deine Epic Games ID ein",
             placeholder="z.B. EpicGamer123",
@@ -179,6 +200,7 @@ class EpicIDModal(Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        print(self.text, "aa", self.text.value)
 
         embed = discord.Embed(
             title="Bestätige deine Eingabe",
@@ -188,6 +210,8 @@ class EpicIDModal(Modal):
         view = EnterID2ConfirmView(self.thread, self.user)
 
         await self.thread.send(embed=embed, view=view)
+        # disable views button only when user submitted. Otherwise buttons would be disabled after user cancels form and is stuck
+        await self.parent_view.disable_buttons(interaction)
 
 
 
