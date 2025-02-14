@@ -5,19 +5,21 @@ import asyncio
 import random
 import time
 import logging
+import aiohttp
 from datetime import datetime
 from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
 from config import TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, CATEGORY_ID, GUILD_ID, FAQ_CHANNEL_ID, MERT_DISCORD_ID, TESTING_CHANNEL_ID
-from config import sampleImageProofsFinalMergedURL
-from db_handler import load_user_data, save_user_data, save_epic_name_to_database, save_image_to_database, save_video_to_database
+from config import sampleImageProofsFinalMergedURL, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
+from db_handler import load_user_data, save_user_data, save_dm_link_to_database, save_epic_name_to_database, save_image_to_database, save_video_to_database
 from config import sample_image_urls, sample_video_urls
+from ratelimit import RateLimitQueue, request_handler
 
 from flask import Flask, request
 import threading
 from reviewGUI.app import app
 
-logging.basicConfig(level=logging.DEBUG)  # Enable INFO logging
+logging.basicConfig(level=logging.INFO)  # Set to DEBUG if you want to see debug logs of discord.http's request function
 # app that handles /notify
 discord_app = Flask(__name__)
 
@@ -31,26 +33,26 @@ intents.reactions = True
 intents.members = True
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+rate_limiter = RateLimitQueue(50)
+print("✅ created RateLimitQueue(50) succesfully!")
 
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
-    if isinstance(message.channel, discord.Thread) and message.channel.type == discord.ChannelType.private_thread:
-        # check if message is in SupportAmar category/context
-        parent_channel = message.channel.parent
-        if parent_channel.category and parent_channel.category.id != CATEGORY_ID:
-            return
-
+    if isinstance(message.channel, discord.DMChannel):
+        
         user_data = load_user_data(message.author.id)
         if user_data is None:
-            await message.channel.send(f"❌ Verifiziere zuerst deinen Epic Games Namen {message.author.mention}!\n"
-                                       "Schreibe solange hier bitte nichts, damit der Verlauf clean bleibt (:") # erst danach wird ein user entry erstellt
+            await rate_limiter.add_request(message.channel.send, (), 
+                {"content":f"❌ Verifiziere zuerst deinen Epic Games Namen {message.author.mention}!\n"
+                            "Schreibe solange hier bitte nichts, damit der unser Verlauf clean bleibt (:"})
             return
         if user_data["step_state"] == "wait":
-            await message.channel.send(f"❌ Dein Beweis wird gerade geprüft {message.author.mention}.\n Wir melden uns bei dir, " 
-                                       "wenn wir fertig sind.\n Schreibe solange hier bitte nichts, damit der Verlauf clean bleibt (:")
+            await rate_limiter.add_request(message.channel.send, (), 
+                {"content":f"❌ Dein Beweis wird gerade geprüft {message.author.mention}.\n Wir melden uns bei dir, " 
+                    "wenn wir fertig sind.\n Schreibe solange hier bitte nichts, damit der Verlauf clean bleibt (:"})
             return
         
         # Check if the message has an attachment (image/video)
@@ -73,16 +75,19 @@ async def on_message(message):
                                 color=discord.Color.green()
                             )
                             embed.set_footer(text="Danke für deine Geduld! ❤️")
-                            await message.channel.send(embed=embed)
+                            await rate_limiter.add_request(message.channel.send, (), 
+                                {"embed": embed})
                             return
                         else:
-                            await message.channel.send(f"❌ {message.author.mention} Du sollst gerade kein Bild hochladen!")
+                            await rate_limiter.add_request(message.channel.send, (), 
+                                {"content":f"❌ {message.author.mention} Du sollst gerade kein Bild hochladen!"})
                             return
                         
                     if file_type == "video":
-                        await message.channel.send(f"❌ {message.author.mention} Du sollst kein Video hochladen! \n Falls du ein Beweisvideo "
-                                                   "einsenden möchtest, musst du das Video auf [streamable.com](https://streamable.com) "
-                                                   "hochladen und dann den Link hier reinsenden")
+                        await rate_limiter.add_request(message.channel.send, (), 
+                            {"content":f"❌ {message.author.mention} Du sollst kein Video hochladen! \n Falls du ein Beweisvideo "
+                                "einsenden möchtest, musst du das Video auf [streamable.com](https://streamable.com) "
+                                "hochladen und dann den Link hier reinsenden"})
                         return
         # check if message is the URL Link to the uploaded video on streamable.com
         if "streamable.com" in message.content:
@@ -96,12 +101,14 @@ async def on_message(message):
                 color=discord.Color.green()
             )
             embed.set_footer(text="Danke für deine Geduld! ❤️")
-            await message.channel.send(embed=embed)
+            await rate_limiter.add_request(message.channel.send, (), 
+                {"embed": embed})
             return
         
         # If the message is not an image or video, delete it
         #await message.delete()
-        await message.channel.send(f"❌ {message.author.mention} schreibe hier bitte nichts, damit der Verlauf clean bleibt (:")
+        await rate_limiter.add_request(message.channel.send, (), 
+            {"content":f"❌ {message.author.mention} schreibe hier bitte nichts, damit der Verlauf clean bleibt (:"})
 
 
 @bot.event
@@ -119,7 +126,7 @@ async def on_raw_reaction_add(payload):
         # caching the giveaway message inside the bot to avoid fetching it multiple times with Discord API
         if not hasattr(bot, "giveaway_message"):
             if giveaway_channel:
-                bot.giveaway_message = await giveaway_channel.fetch_message(giveaway_data["message_id"])  # API call
+                bot.giveaway_message = await rate_limiter.add_request(giveaway_channel.fetch_message, (giveaway_data["message_id"],), {})
                 giveaway_message = bot.giveaway_message
                 print("✅ Cached giveaway message.")
         else:
@@ -130,10 +137,9 @@ async def on_raw_reaction_add(payload):
     if str(payload.emoji) == "✋" and giveaway_message.id == payload.message_id:
         # search user inside bots cache before fetchign from API
         user = bot.get_user(payload.user_id)
-        print("User found by get_user:", user)
         if user is None:
             print("User not found.")
-            user = await bot.fetch_user(payload.user_id)
+            user = await rate_limiter.add_request(bot.fetch_user, (payload.user_id,), {})
         print("User found:", user)
 
         if user and not user.bot:  # Ignore bot reactions
@@ -147,40 +153,36 @@ async def on_raw_reaction_add(payload):
                 print(f"User has already reacted.{user_data['reacted_hand'], user_data['discord_id']}")
                 return  # User already reacted, do nothing
             
-            # ✅ Find the user's verification thread
-            verification_channel = bot.get_channel(WELCOME_CHANNEL_ID)
-            user_thread = discord.utils.get(verification_channel.threads, name=f"{user.name.lower()}-verifizierung")
-            if user_thread:
-                # ✅ Create the embed message
-                embed = discord.Embed(
-                    title="🎁 Möchtest du deine Gewinnchance erhöhen? 🎁",
-                    description=(
-                        "Dann sende hier ein **Beweisvideo 🎥**, "
-                        "das zeigt, wie du etwas aus dem **Item-Shop mit dem Creator Code AMAR kaufst.**\n\n"
-                        "🔹 **Das Video muss Folgendes zeigen:**\n"
-                        "1️⃣ Der **Creator Code AMAR** muss sichtbar sein.\n"
-                        "2️⃣ Dein **Epic Games Name** muss zu sehen sein.\n"
-                        "3️⃣ Der **gesamte Kaufvorgang** bis zum Ende muss im Video sein.\n"
-                        "4️⃣ Am Ende musst du die Items ausrüsten, um zu beweisen, dass du den **Kauf nicht zurückerstattest**.\n\n"
-                        "➡️ **So sollte dein Beweisvideo ungefähr aussehen: [Muster Video](https://streamable.com/cnsugr)** "
-                        "**(unbedingt anschauen, damit dein Video garantiert akzeptiert wird!)**\n\n"
-                        "🔸 So lädst du das Video hoch:\n"
-                        "📎 Lade das Video auf [streamable.com](https://streamable.com) hoch und sende den Link hier rein.\n\n"
-                        "**💰 100 V-Bucks = 1x Gewinnchance mehr**.\n"
-                        "Wenn du ein **800 V-Bucks** Item mit dem Creator Code AMAR kaufst, erhältst du **8x Gewinnchance**!\n"
-                        "Das bedeutet, du hättest eine **Gesamtgewinnchance von 9x** 🎉\n\n"
-                        "❤️ **Fühl dich nicht gezwungen, etwas aus dem Item-Shop zu kaufen!**\n"
-                        "Schon das Eintragen des Creator Codes **ist ein großer Support für Amar!** ❤️"
-                    ),
-                    color=discord.Color.gold()
-                )
+        
+            # ✅ Create the embed message
+            embed = discord.Embed(
+                title="🎁 Möchtest du deine Gewinnchance erhöhen? 🎁",
+                description=(
+                    "Dann sende hier ein **Beweisvideo 🎥**, "
+                    "das zeigt, wie du etwas aus dem **Item-Shop mit dem Creator Code AMAR kaufst.**\n\n"
+                    "🔹 **Das Video muss Folgendes zeigen:**\n"
+                    "1️⃣ Der **Creator Code AMAR** muss sichtbar sein.\n"
+                    "2️⃣ Dein **Epic Games Name** muss zu sehen sein.\n"
+                    "3️⃣ Der **gesamte Kaufvorgang** bis zum Ende muss im Video sein.\n"
+                    "4️⃣ Am Ende musst du die Items ausrüsten, um zu beweisen, dass du den **Kauf nicht zurückerstattest**.\n\n"
+                    "➡️ **So sollte dein Beweisvideo ungefähr aussehen: [Muster Video](https://streamable.com/cnsugr)** "
+                    "**(unbedingt anschauen, damit dein Video garantiert akzeptiert wird!)**\n\n"
+                    "🔸 **So lädst du das Video hoch:**\n"
+                    "📎 Lade das Video auf [streamable.com](https://streamable.com) hoch und sende den Link hier rein.\n\n"
+                    "**💰 100 V-Bucks = 1x Gewinnchance mehr**.\n"
+                    "Wenn du ein **800 V-Bucks** Item mit dem Creator Code AMAR kaufst, erhältst du **8x Gewinnchance**!\n"
+                    "Das bedeutet, du hättest eine **Gesamtgewinnchance von 9x** 🎉\n\n"
+                    "❤️ **Fühl dich nicht gezwungen, etwas aus dem Item-Shop zu kaufen!**\n"
+                    "Schon das Eintragen des Creator Codes **ist ein großer Support für Amar!** ❤️"
+                ),
+                color=discord.Color.gold()
+            )
+            embed.set_footer(text="Danke für deinen Support! ❤️")
 
-                # ✅ Send the embed to the user's verification thread
-                await user_thread.send(embed=embed)
-                print(f"✅ Embed sent to {user.name}'s verification thread.")
-
-            else:
-                print(f"❌ Verification thread not found for {user.name}.")
+            # ✅ Send the embed to the user DM
+            await rate_limiter.add_request(user.send, (), 
+                {"embed": embed})
+            print(f"✅ Embed sent to {user.name}'s DMs.")
 
             # ✅ Update user data to mark them as reacted
             user_data["reacted_hand"] = True
@@ -197,13 +199,58 @@ async def on_raw_reaction_add(payload):
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
 
+    asyncio.create_task(rate_limiter.worker(request_handler))
+    print("✅ Started worker of RateLimitQueue(50) succesfully!")
 
-    print("End of testing")
+
+    #print("✅✅✅✅✅✅✅✅✅BEgin of Testing")
+    guild = bot.get_guild(GUILD_ID)  # Replace with your server ID
+
+    # Test rate limit queue system
+
+
+
+    ## Send 1 message in each of the 1000 channels WITHOUT QUEUE
+    #channels = [channel for category in guild.categories for channel in category.channels if channel.name.startswith("test")]
+    #tasks = [channel.send(f"Test message in {channel.name}") for channel in channels]
+    #print("created tasks")
+    #await asyncio.sleep(3)
+    #print("Now gather")
+    #await asyncio.gather(*tasks)
+
+    #embed = discord.Embed(
+    #    title="Mit Epic Games Account verknüpfen",
+    #    description=("Klicke auf den Button unten, um dein Epic Games Account mit deinem Discord-Account " 
+    #                "für den Discord-Bot SupportAmar zu verknüpfen und somit deine Identität zu bestätigen.\n "
+    #                "**Der SupportAmar-Bot erhält KEINEN Zugriff auf deine Account-Daten oder dein Passwort!**"),
+    #    color=discord.Color.blue()
+    #)
+    #embed.set_footer(text="Mit deiner Anmeldung stimmst du zu, dass der Bot den Benutzernamen deines Epic Games Accounts "
+    #                      "verarbeiten und mit deinen Discord-Daten verknüpfen darf.")
+    #view = Verify2EnterIDView(0)
+    ## Send 1 message in each of the 1000 channels with QUEUE using Discord API
+    #channels = [channel for category in guild.categories for channel in category.channels if channel.name.startswith("test")]
+    ##tasks = [rate_limiter.add_request(channel.send, (), {"content":f"Test message in {channel.name}"}) for channel in channels]
+    #tasks = [rate_limiter.add_request(channel.send, (), {"embed":embed, "view":view}) for channel in channels]
+    #print("created tasks")
+    #await asyncio.sleep(1)
+    #print("Now gather")
+    #await asyncio.gather(*tasks)
+
+    ## Send 1 message in each of the 1000 channels with QUEUE NOT using Discord API just print()
+    #channels = [channel for category in guild.categories for channel in category.channels if channel.name.startswith("test")]
+    #tasks = [rate_limiter.add_request(print, (f"Test message in, {channel.name}"), {}) for channel in channels]
+    #print("created tasks")
+    #await asyncio.sleep(1)
+    #print("Now gather")
+    #await asyncio.gather(*tasks)
+
+    #print("End of testing✅✅✅✅✅✅✅✅")
 
     # Re-register the view globally after restart because the view is not registered by default after restarting the bot and not sending the view
     bot.add_view(BaseView())
     bot.add_view(Welcome2VerifyView()) 
-    bot.add_view(Verify2EnterIDView())
+    bot.add_view(Verify2EnterIDView(None))
 
     ## sync for commands           #BUG/WARNING: this sync command took long and sometimes didnt terminate ending it rate limit ban...
     #try:                          #DOCUMENTATION: ...and it is also working without it
@@ -223,7 +270,7 @@ async def on_ready():
         #        print(f"🗑️ Thread gelöscht: {thread.name}")
         #    except Exception as e:
         #        print(f"❌ Konnte den Thread {thread.name} nicht löschen: {e}")
-
+        #return
         #await channel.purge()
 
         # UNCOMMENT THIS IF THE INTITAL MESSAGE GOT DELETED
@@ -280,28 +327,28 @@ async def on_ready():
             # Abgrenzung
             faq_embed.add_field(name="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬", value=" ", inline=False)
             faq_embed.add_field(name=" ", value=" ", inline=False)
-        
-            mert_user = await bot.fetch_user(MERT_DISCORD_ID)
+
+            mert_user = await rate_limiter.add_request(bot.fetch_user, (MERT_DISCORD_ID,), {})
             faq_embed.add_field(name="**❓Du kommst nicht weiter mit deinem Problem?❓**", 
                 value=f"Wenn alle Stricke reißen, dann wende dich an den Bot-Entwickler {mert_user.mention}\n\n"
                       , inline=False)
             
             #UNCOMMENT IF FAQ MESSAGE GOT DELETED
-            #await faq_channel.send(embed=faq_embed)
+            #await rate_limiter.add_request(faq_channel.send, (), {"embed":faq_embed})
         
         embed = discord.Embed(
             title="🎉 Willkommen zu Amar's Giveaway🎁!",
             description=(
                 "✅ Drücke auf die Hand ✋ unten, um **teilzunehmen**!\n\n"
                 "Durch das Eintragen des Creator Codes hast du eine **__1x Gewinnchance__**!\n\n"
-                "**Möchtest du deine __Gewinnchance erhöhen__?** \n➡️ Dann sende in dem vorherigen Bot Channel ein Beweisvideo 🎥!\n"
-                "Mehr Informationen findest du in dem Bot Channel, in dem du auch das Beweisbild hochgeladen hast. \n" 
+                "**Möchtest du deine __Gewinnchance erhöhen__?** \n➡️ Dann sende ein Beweisvideo 🎥 in den DMs von dem Bot!\n"
+                "Mehr Informationen findest du in den DMs, in dem du auch das Beweisbild hochgeladen hast. \n" 
             ),
             color=discord.Color.gold()
         )
         embed.set_footer(text="Danke für deinen Support! ❤️")
 
-        # UNCOMMENT IF GIVEAWAY MESSAGE GOT DELETED
+        # UNCOMMENT IF GIVEAWAY MESSAGE GOT DELETED       # BUG: IF UNCOMMENCTING, THEN UPDATE THE MESSAGE ID IN THE GIVEAWAY.JSON FILE !!!
         #giveaway_message = await giveaway_channel.send(embed=embed)
         #await giveaway_message.add_reaction("✋")
 
@@ -326,7 +373,7 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
 
     with open("giveaway.json", "r") as f:
         giveaway_data = json.load(f)
-        giveaway_message = await giveaway_channel.fetch_message(giveaway_data["message_id"])
+        giveaway_message = await rate_limiter.add_request(giveaway_channel.fetch_message, (giveaway_data["message_id"],), {})
 
     # Gather participants
     participants = []
@@ -362,10 +409,9 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
                     total_points += points
 
     if len(participants) < anzahl_gewinner:
-        await interaction.response.send_message(
-            "❌ Nicht genügend Teilnehmer, um die angegebene Anzahl von Gewinnern zu wählen.",
-            ephemeral=True
-        )
+        await rate_limiter.add_request(interaction.response.send_message, (), 
+            {"content":"❌ Nicht genügend Teilnehmer, um die angegebene Anzahl von Gewinnern zu wählen.",
+            "ephemeral":True})
         return
 
     # Select winners using weighted random sampling
@@ -382,14 +428,15 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
                      "\n".join(f"{place+1}. {mention} 🥳" for place, mention in enumerate(winner_mentions)) +
                      "\n\n" +
                      "Gewinnchancen aller Supporter: \n"  +
-                     "\n".join(f"@{user.name}: {chance}x Gewinnchance" for user, chance in zip(participants, user_weights))
+                     "\n".join(f"@{user.name}: **{chance}x** Gewinnchance" for user, chance in zip(participants, user_weights))
                     ),
         
         color=discord.Color.gold()
     )
     embed.set_footer(text="Danke für deinen Support! ❤️")
 
-    await interaction.response.send_message(embed=embed)
+    await rate_limiter.add_request(interaction.response.send_message, (), 
+        {"embed": embed})
 
 
 def weighted_random_selection(participants, user_weights, num_winners):
@@ -433,7 +480,8 @@ class BaseView(View):
         for child in self.children:  # Iterate through all buttons
             child.disabled = True
 
-        await interaction.message.edit(view=self)  # Update the message
+        await rate_limiter.add_request(interaction.message.edit, (), # Update the message
+            {"view": self})
 
 
 class Welcome2VerifyView(BaseView):
@@ -444,92 +492,40 @@ class Welcome2VerifyView(BaseView):
     async def verify(self, interaction: discord.Interaction, button: Button):
         guild = interaction.guild
         user = interaction.user
-        channel = guild.get_channel(WELCOME_CHANNEL_ID)
 
-        existing_thread = discord.utils.get(channel.threads, name=f"{user.name.lower()}-verifizierung")
-        if existing_thread:
-            await interaction.response.send_message(
-                f"❌ Du hast bereits ein offenes Ticket: {existing_thread.mention}",
-                ephemeral=True
-            )
+        user_data = load_user_data(user.id)
+        if user_data:
+            dm_link = user_data["dm_link"]
+            await rate_limiter.add_request(interaction.response.send_message, (), 
+                {"content":f"❌ {user.mention} Ich habe dir bereits eine DM geschickt! ➡️ **[Gehe zu deinen DMs🔗]({dm_link})**",
+                 "ephemeral":True})
             return
-
-        thread = await channel.create_thread(            # PROBLEM: creating threads is rate limited to 50 per 300 seconds 
-            name=f"{user.name.lower()}-verifizierung",   # TODO: change this to sending the message in DM rather than in private thread
-            type=discord.ChannelType.private_thread,
-            invitable=False
-        )
-        await thread.add_user(user)
+            
         embed = discord.Embed(
-            title="🔑 Epic Games Verifizierung",
-            description="Drücke auf den Button unten, um deinen Epic Games Namen einzugeben!",
+            title="Mit Epic Games Account verknüpfen",
+            description=("Klicke auf den Button unten, um dein Epic Games Account mit deinem Discord-Account " 
+                        "für den Discord-Bot SupportAmar zu verknüpfen und somit deine Identität zu bestätigen.\n "
+                        "**Der SupportAmar-Bot erhält KEINEN Zugriff auf deine Account-Daten oder dein Passwort!**"),
             color=discord.Color.blue()
         )
-        view = Verify2EnterIDView()
+        embed.set_footer(text="Mit deiner Anmeldung stimmst du zu, dass der Bot den Benutzernamen deines Epic Games Accounts "
+                              "verarbeiten und mit deinen Discord-Daten verknüpfen darf.")
+            
+           
+        view = Verify2EnterIDView(user.id)
 
-        await thread.send(embed=embed, view=view)
-
-        await interaction.response.send_message(f"✅ Dein privates Ticket wurde erstellt: ➡️ **{thread.mention}**", ephemeral=True)
-
+        dm_message = await rate_limiter.add_request(user.send, (), {"view": view, "embed": embed})
+        dm_link = dm_message.jump_url
+        save_dm_link_to_database(user.id, dm_link)
+        await rate_limiter.add_request(interaction.response.send_message, (), 
+            {"content":f"✅ {user.mention} Ich habe dir eine DM geschickt! ➡️ **[Gehe zu deinen DMs🔗]({dm_link}) **",
+             "ephemeral":True})
 
 class Verify2EnterIDView(BaseView):
-    def __init__(self):
+    def __init__(self, discord_id):
         super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(label="Mit Epic Games Account verknüpfen", style=discord.ButtonStyle.link, url=EPIC_OAUTH_URL+f"&state={discord_id}"))
 
-    @discord.ui.button(label="🎮 Epic Games Namen eingeben", style=discord.ButtonStyle.blurple, custom_id="enter_epic_id")
-    async def enter_epic_id(self, interaction: discord.Interaction, button: Button):
-        print(interaction.channel, interaction.user, self, self.children)
-        await interaction.response.send_modal(EpicIDModal(interaction.channel, interaction.user, self))
-
-
-class EpicIDModal(Modal):
-    def __init__(self, thread, user, parent_view):
-        super().__init__(title="Gib deinen Epic Games Namen ein")
-        self.thread = thread
-        self.user = user
-        self.parent_view = parent_view
-        self.text = TextInput(
-            label="Gib dein Epic Games Namen ein!",
-            placeholder="z.B. EpicGamer123",
-            required=True
-        )
-        self.add_item(self.text)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        epic_name = str(self.text.value)
-        save_epic_name_to_database(self.user.id, self.user.name, epic_name)
-
-        # Disable the buttons after clicking
-        await self.parent_view.disable_buttons(interaction)
-
-        # next step: proof code registration
-        embed = discord.Embed(
-            title="✅ Danke! Dein Epic Games Name wurde bestätigt und gespeichert.\n"
-                  "**Creator Code AMAR eingetragen?**",
-            description=(
-                "Bitte lade ein **Beweisbild** hoch, das zeigt, dass du den Creator Code **AMAR** benutzt hast:\n\n" 
-                "🔹 **Das Bild sollte Folgendes zeigen:**\n"
-                "1️⃣ Dein **Epic Games Name**\n"
-                "2️⃣ Den eingetragenen Creator Code **AMAR**\n\n"
-                "🔸 **Möglichkeiten zur Erstellung des Beweisbildes:**\n\n"
-                "**🎮 Option 1: Direkt im Fortnite-Spiel**\n"
-                "1️⃣ Öffne Fortnite und gehe in den **Item-Shop**.\n"
-                "2️⃣ Trage den Creator Code **AMAR** unten rechts im Shop ein.\n"
-                "3️⃣ Mach einen Screenshot oder fotografiere den Bildschirm (z.B. mit dem Handy).\n\n"
-                "**🖥️ Option 2: Über die Fortnite-Website**\n"
-                "1️⃣ Gehe auf [fortnite.com/item-shop](https://www.fortnite.com/item-shop) und logge dich ein.\n"
-                "2️⃣ Klicke oben rechts auf den **Creator Code Button** [★] und gib **AMAR** ein.\n"
-                "3️⃣ Mache einen Screenshot oder fotografiere den Bildschirm. (z.B. mit dem Handy)\n\n"
-                "🔸 **So lädst du das Bild hoch:**\n"
-                "📎 Drücke hier im Discord Bot-Chat unten links auf das **(+)** Symbol und lade das Bild hoch.\n\n"
-                "➡️ **So sollte dein Beweisbild aussehen (eins von beiden Optionen und ohne Markierungen):**"
-            ),
-            color=discord.Color.blue()
-        )
-        embed.set_image(url=sampleImageProofsFinalMergedURL)
-        embed.set_footer(text="Vielen Dank für deinen Support! ❤️")
-        await self.thread.send(embed=embed)
 
 
 
@@ -549,15 +545,8 @@ def notify():
 
     if not user:
         return {"error": "User not found"}, 404
-
-    # Find the user's verification thread
-    verification_channel = bot.get_channel(WELCOME_CHANNEL_ID)
-    user_thread = discord.utils.get(verification_channel.threads, name=f"{user.name.lower()}-verifizierung")
-    
-    if not user_thread:
-        return {"error": "Thread not found"}, 404
         
-    # ✅ Notify the user in their private verification thread
+    # ✅ Notify the user in their DMs
     embed = discord.Embed(color=discord.Color.blue())
 
     if file_type == "image":
@@ -580,7 +569,7 @@ def notify():
             faq_channel = bot.get_channel(FAQ_CHANNEL_ID)
             embed.description = (
                 f"📝 Grund: {data['reason']}\n\n"
-                f"➡️ **Bitte lade ein neues Bild hoch**, das alle Anforderungen erfüllt! ➡️{faq_channel.mention}"
+                f"➡️ **Bitte lade ein neues Bild hoch**, das alle Anforderungen erfüllt!"
             )
             embed.color = discord.Color.red()
 
@@ -590,7 +579,6 @@ def notify():
             embed.description = (
                 f"🏆 **Du hast dafür +{data['points_added']}x Gewinnchancen erhalten!** 🏆\n"
                 f"🔥 Jetzt hast du insgesamt **{user_data['points_assigned']}x Gewinnchancen**, Damn! 🔥\n\n"
-                "🔔 **Je mehr Support, desto höher deine Gewinnchance!** 🔔\n"
             )
             embed.set_footer(text="Danke für deinen Support! ❤️")
             embed.color = discord.Color.gold()
@@ -599,12 +587,12 @@ def notify():
             faq_channel = bot.get_channel(FAQ_CHANNEL_ID)
             embed.description = (
                 f"📝 Grund: {data['reason']}\n\n"
-                f"➡️ **Bitte lade ein neues Video hoch**, das alle Anforderungen erfüllt. ➡️ {faq_channel.mention}"
+                f"➡️ **Bitte sende einen neuen [streamable.com Video Link](https://streamable.com)**, das alle Anforderungen erfüllt."
             )
             embed.color = discord.Color.red()
 
-    # ✅ Send the embed message in the user's verification thread
-    asyncio.run_coroutine_threadsafe(user_thread.send(embed=embed), bot.loop)
+    # ✅ Send the embed message in the user's DMs
+    asyncio.run_coroutine_threadsafe(user.send(embed=embed), bot.loop)
 
     return {"success": True}
 
@@ -641,9 +629,103 @@ async def stress_test_concurrent_users(frequency=10):
     end_time = time.time()  # End time
     print(f"✅ Completed {frequency} tasks in {end_time - start_time:.2f} seconds!")
 
-
-
 # --- END OF TESTS ---
+
+
+
+# EPIC GAMES AUTHENTICATION
+
+
+
+
+discord_user_epic = {}
+
+@reviewer_app.route('/epic_auth')
+def epic_callback():
+    code = request.args.get('code')
+    discord_id = request.args.get('state')
+    user = bot.get_user(int(discord_id))
+    if user is None:
+        async def fetch_user():
+            user = await rate_limiter.add_request(bot.fetch_user, (int(discord_id),), {})
+            return user
+        user = asyncio.run(fetch_user())
+        if user is None:
+            print("User not found")
+            
+        
+    print("User found (/epic_auth):", user)
+
+    async def exchange_code():
+        async with aiohttp.ClientSession() as session:
+            token_url = "https://api.epicgames.dev/epic/oauth/v1/token"
+            data = {
+                'grant_type': 'authorization_code',
+                'code': code,
+                'redirect_uri': EPIC_REDIRECT_URI
+            }
+            headers = aiohttp.BasicAuth(EPIC_CLIENT_ID, EPIC_CLIENT_SECRET)
+            start = time.time()
+            async with session.post(token_url, data=data, auth=headers) as resp:
+                token_data = await resp.json()
+                #print(token_data)
+                end = time.time()
+            
+                access_token = token_data.get('access_token')
+                #print("got Token✅✅✅✅✅✅✅✅")
+
+                async with session.get('https://api.epicgames.dev/epic/oauth/v1/userInfo', headers={
+                    'Authorization': f'Bearer {access_token}'
+                }) as user_resp:
+                    user_data = await user_resp.json()
+                    #print(user_data)
+                    print(f"✅ Linked {discord_id} to {user_data['preferred_username']}")
+
+                    
+                    db_resp = save_epic_name_to_database(user.id, user.name, user_data['preferred_username'])
+                    
+                    # next step: proof code registration
+                    embed = discord.Embed(
+                        title="✅ Danke! Dein Epic Games Name wurde bestätigt und gespeichert.\n"
+                              "**Creator Code AMAR eingetragen?**",
+                        description=(
+                            "Bitte lade ein **Beweisbild** hoch, das zeigt, dass du den Creator Code **AMAR** benutzt hast:\n\n" 
+                            "🔹 **Das Bild sollte Folgendes zeigen:**\n"
+                            "1️⃣ Dein **Epic Games Name**\n"
+                            "2️⃣ Den eingetragenen Creator Code **AMAR**\n\n"
+                            "🔸 **Möglichkeiten zur Erstellung des Beweisbildes:**\n\n"
+                            "**🎮 Option 1: Direkt im Fortnite-Spiel**\n"
+                            "1️⃣ Öffne Fortnite und gehe in den **Item-Shop**.\n"
+                            "2️⃣ Trage den Creator Code **AMAR** unten rechts im Shop ein.\n"
+                            "3️⃣ Mach einen Screenshot oder fotografiere den Bildschirm (z.B. mit dem Handy).\n\n"
+                            "**🖥️ Option 2: Über die Fortnite-Website**\n"
+                            "1️⃣ Gehe auf [fortnite.com/item-shop](https://www.fortnite.com/item-shop) und logge dich ein.\n"
+                            "2️⃣ Klicke oben rechts auf den **Creator Code Button** [★] und gib **AMAR** ein.\n"
+                            "3️⃣ Mache einen Screenshot oder fotografiere den Bildschirm. (z.B. mit dem Handy)\n\n"
+                            "🔸 **So lädst du das Bild hoch:**\n"
+                            "📎 Drücke hier im Discord Bot-Chat unten links auf das **(+)** Symbol und lade das Bild hoch.\n\n"
+                            "➡️ **So sollte dein Beweisbild aussehen (eins von beiden Optionen und ohne Markierungen):**"
+                        ),
+                        color=discord.Color.blue()
+                    )
+                    embed.set_image(url=sampleImageProofsFinalMergedURL)
+                    embed.set_footer(text="Vielen Dank für deinen Support! ❤️")
+                    await rate_limiter.add_request(user.send, (), 
+                        {"embed": embed})
+                return db_resp
+
+    future = asyncio.run_coroutine_threadsafe(exchange_code(), bot.loop)
+    result = future.result()
+    if result:   
+        return "✅ Epic Games Verifizierung erfolgreich. Du kannst jetzt wieder zurück zu Discord! ✅"
+    else:
+        return "❌ Du hast die Epic Games Verifizierung schon abgeschlossen. Du kannst jetzt wieder zurück zu Discord! ❌"
+    
+# --- END OF EPIC GAMES AUTHENTICATION ---
+
+
+
+
 
 if __name__ == "__main__":
 
@@ -655,8 +737,11 @@ if __name__ == "__main__":
     discord_app_thread.start() # WARNING: dont notify when TESTING because populated discord user will end up in 400 errors of Discord API rate limit
 
     #asyncio.run(stress_test_concurrent_users(10))
-    
+
     bot.run(TOKEN)
 
-    # Run the test
+    
+
+
+
 

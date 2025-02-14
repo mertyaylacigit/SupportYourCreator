@@ -1,6 +1,10 @@
 import os
 
 TOKEN = os.getenv("TOKEN")
+EPIC_CLIENT_ID = os.getenv("EPIC_CLIENT_ID")
+EPIC_CLIENT_SECRET = os.getenv("EPIC_CLIENT_SECRET")
+EPIC_REDIRECT_URI = "https://87b40d87-33ca-444e-a6d5-bb2e17537b90-00-26bel8cynbx4k.janeway.replit.dev/epic_auth"
+EPIC_OAUTH_URL = f"https://www.epicgames.com/id/authorize?client_id={EPIC_CLIENT_ID}&response_type=code&scope=basic_profile&redirect_uri={EPIC_REDIRECT_URI}"
 CATEGORY_ID = 1329571928482250835
 WELCOME_CHANNEL_ID = 1329571928951754823
 GUILD_ID = 1329571928482250834

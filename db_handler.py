@@ -10,6 +10,7 @@ os.makedirs(DB_DIR, exist_ok=True)  # Ensure directory exists
 
 # List of attributes each user entry should have
 attributes_list = [
+    "dm_link",
     "discord_id",
     "discord_name",
     "epic_name",
@@ -39,7 +40,6 @@ def initialize_key(discord_id):
         user_data["images"] = []  # Initialize empty images list
         user_data["videos"] = []  # Initialize empty videos list
         user_data["step_state"] = "epic_name"  # The user's next step is to enter their Epic Games name
-        user_data["points_assigned"] = discord_id
         user_data["reacted_hand"] = False
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(user_data, file, indent=4)
@@ -83,19 +83,36 @@ def save_user_data(discord_id, data):
     with open(file_path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=4)
 
+# ✅ Save DM link
+def save_dm_link_to_database(discord_id, dm_link):
+    """Saves the Epic Games ID for a user."""
+    initialize_key(discord_id)  # Ensure user file exists
+    user_data = load_user_data(discord_id)  # Load current data
+
+    user_data["dm_link"] = dm_link 
+
+    save_user_data(discord_id, user_data)  # Save back to file
+    print(f"✅ Saved Epic Games ID for user {discord_id}")
+
 # ✅ Save Epic Games ID
 def save_epic_name_to_database(discord_id, discord_name, epic_name):
     """Saves the Epic Games ID for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
 
-    user_data["epic_name"] = str(epic_name)
-    user_data["discord_name"] = str(discord_name)
-    user_data["timestamp_epic_name"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    user_data["step_state"] = "image_proof"  # The user's next step is to upload image proof
+    if (user_data["epic_name"] is None):
+        user_data["epic_name"] = str(epic_name)
+        user_data["discord_name"] = str(discord_name)
+        user_data["timestamp_epic_name"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        user_data["step_state"] = "image_proof"  # The user's next step is to upload image proof
+        
+    else: # user proofed already epic name
+        print(f"❌ User {discord_id} already proofed their Epic Games name {user_data['epic_name']}")
+        return False
 
     save_user_data(discord_id, user_data)  # Save back to file
     print(f"✅ Saved Epic Games ID for user {discord_id}")
+    return True
 
 # ✅ Save Image Proof
 def save_image_to_database(discord_id, image_url):
