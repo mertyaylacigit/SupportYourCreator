@@ -7,7 +7,7 @@ hidden = [".pythonlibs"]
 channel = "stable-23_05"
 
 [deployment]
-run = ["python", "main.py"]
+run = ["sh", "-c", "export ENVIRONMENT=deployment ; python main.py"]
 deploymentTarget = "cloudrun"
 build = ["sh", "-c", "pip install -r requirements.txt"]
 

@@ -675,12 +675,21 @@ def notify():
 def run_reviewer_app():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    reviewer_app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=False)
-    
+    if os.environ.get("ENVIRONMENT") == "deployment":
+        # In production, this will be handled by the deployment configuration
+        pass
+    else:
+        reviewer_app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=False)
+
 def run_discord_app():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    discord_app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)
+    if os.environ.get("ENVIRONMENT") == "deployment":
+        # In production, this will be handled by the deployment configuration
+        pass
+    else:
+        discord_app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)
+
 
 
 # TESTS
