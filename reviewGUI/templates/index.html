@@ -135,8 +135,16 @@
                         <strong>📇 Discord ID:</strong> ${user.discord_id}<br>
                         <strong>📅 Eingereicht:</strong> ${pendingVideo.timestamp_uploaded}<br>
                         <strong>📝 Epic Name:</strong> ${user.epic_name}<br>
-                        <strong>🔗 Streamable-Video-URL:</strong> <a href="${pendingVideo.streamable_video_url}" target="_blank" style="font-size: 300%;">Streamable Video URL Link</a>
+                        <strong>🔗 Streamable-Video-URL:</strong> <a href="${pendingVideo.streamable_video_url}" target="_blank" style="font-size: 100%;">Streamable Video URL Link</a>
                     </p>
+                    <div class="media-box">
+                        <iframe src="https://streamable.com/e/${pendingVideo.streamable_video_url.split('/').pop()}" 
+                                frameborder="0" 
+                                allowfullscreen 
+                                width="100%" 
+                                height="100%">
+                        </iframe>
+                    </div>
                     <div class="d-flex align-items-center">
                         <input id="comment-video-${user.discord_id}" type="text" class="form-control comment-input me-2" placeholder="Kommentar fürs Ablehnen eingeben...">
                         <button class="btn btn-danger me-2" onclick="disapproveVideo('${user.discord_id}')">❌ Ablehnen</button>

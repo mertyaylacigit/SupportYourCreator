@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Review System</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        .image-box {
+            width: 100%;
+            height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }
+        .image-box img {
+            width: 100%; /* Stretch the width of the image */
+            height: 100%; /* Stretch the height of the image */
+            object-fit: cover; /* Fill the image-box entirely */
+            object-position: center; /* Center the image within the box */
+        }
+        .comment-input {
+            border: 2px solid red;
+            background-color: #ffe6e6;
+        }
+        .comment-input:focus {
+            border-color: darkred;
+            box-shadow: 0 0 5px rgba(255, 0, 0, 0.7);
+        }
+    </style>
+    <script>
+        let images = [];
+        let currentIndex = 0;
+
+        async function loadImages() {
+            const response = await fetch("/get_images");
+            images = await response.json();
+            if (images.length === 0) {
+                document.getElementById("image-container").innerHTML = "<p class='text-center text-muted'>✅ Keine ausstehenden Bilder.</p>";
+                return;
+            }
+            displayImage(0); // Start with the first image
+        }
+
+        function displayImage(index) {
+            const container = document.getElementById("image-container");
+            container.innerHTML = ""; // Clear previous image
+
+            if (index >= images.length || index < 0) return;
+
+            const user = images[index];
+            console.log(user)
+
+            const card = document.createElement("div");
+            card.className = "card mb-3";
+            card.innerHTML = 
+                <div class="card-body">
+                    <h5 class="card-title">👤 ${user.epic_name}</h5>
+                    <p class="card-text">
+                        <strong>📅 Eingereicht:</strong> ${user.timestamp_image}<br>
+                        <strong>📇 Discord ID:</strong> ${user.discord_id}<br>
+                        <strong>🔗 Bild-URL:</strong> <a href="/images/${user.discord_id}.png" target="_blank">Bild URL Link</a>
+                    </p>
+                    <div class="image-box">
+                        <img src="/images/${user.discord_id}.png" alt="User image">
+                    </div>
+                    <div class="d-flex align-items-center">
+                        <button class="btn btn-primary me-2" onclick="approveAllUntilHere()">✅ Alle bis hier genehmigen</button>
+                        <input id="comment-${user.discord_id}" type="text" class="form-control comment-input me-2" placeholder="Kommentar fürs Ablehnen eingeben...">
+                        <button class="btn btn-danger me-2" onclick="disapproveImage('${user.discord_id}')">❌ Ablehnen</button>
+                        <button class="btn btn-success" onclick="approveImage('${user.discord_id}')">✅ Genehmigen</button>
+                    </div>
+                </div>
+            ;
+            container.appendChild(card);
+
+            document.getElementById("progress").innerText = Bild ${index + 1} von ${images.length};
+        }
+
+        async function approveImage(userId) {
+            const response = await fetch("/update_status", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ user_id: userId, status: "approved" })
+            });
+            const result = await response.json();
+            showTemporaryMessage(result.message, response.ok ? "success" : "danger");
+
+            if (response.ok) {
+                images.splice(currentIndex, 1); // Remove the approved image
+                displayImage(currentIndex); // Show the next image
+            }
+        }
+
+        async function disapproveImage(userId) {
+            const comment = document.getElementById(comment-${userId}).value;
+            const response = await fetch("/update_status", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ user_id: userId, status: "denied", comment: comment })
+            });
+            const result = await response.json();
+            // Show the comment in the temporary message
+            showTemporaryMessage(
+                response.ok
+                    ? ❌ Bild abgelehnt: ${comment}
+                    : ⚠️ Fehler: ${result.message},
+                response.ok ? "success" : "danger"
+            );
+            if (response.ok) {
+                images.splice(currentIndex, 1); // Remove the disapproved image
+                displayImage(currentIndex); // Show the next image
+            }
+        }
+
+        async function approveAllUntilHere() {
+            const batch = images.slice(0, currentIndex + 1).map(user => user.id);
+            const response = await fetch("/bulk_approve", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ user_ids: batch })
+            });
+            const result = await response.json();
+            showTemporaryMessage(result.message, response.ok ? "success" : "danger");
+
+            if (response.ok) {
+                images = images.slice(currentIndex + 1); // Keep only remaining images
+                currentIndex = 0;
+                displayImage(0);
+            }
+        }
+
+        function showTemporaryMessage(message, type) {
+            const container = document.getElementById("message-container");
+            const alert = document.createElement("div");
+            alert.className = alert alert-${type}; // test danger here
+            alert.innerText = message;
+            container.appendChild(alert);
+
+            setTimeout(() => container.removeChild(alert), 3000);
+        }
+
+        function handleKeyPress(event) {
+            const activeElement = document.activeElement;
+            // Avoid shortcuts when typing in the comment input field
+            if (activeElement.tagName === "INPUT" && activeElement.type === "text") {
+                return;
+            }
+            if (event.key.toLowerCase() === "a") {
+                currentIndex = Math.max(currentIndex - 1, 0);
+                displayImage(currentIndex);
+            } else if (event.key.toLowerCase() === "d") {
+                currentIndex = Math.min(currentIndex + 1, images.length - 1);
+                displayImage(currentIndex);
+            }
+        }
+
+        window.onload = () => {
+            loadImages();
+            document.addEventListener("keydown", handleKeyPress);
+        };
+    </script>
+</head>
+<body class="container mt-4">
+    <h1 class="text-center">📷 Bildüberprüfung</h1>
+    <p id="progress" class="text-center text-muted"></p>
+    <div id="image-container"></div>
+    <div id="message-container"></div>
+</body>
+</html>

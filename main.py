@@ -1,5 +1,6 @@
 import discord
 import os 
+import shutil
 import json 
 import asyncio
 import random
@@ -11,7 +12,7 @@ from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
 from config import TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, CATEGORY_ID, GUILD_ID, FAQ_CHANNEL_ID, MERT_DISCORD_ID, TESTING_CHANNEL_ID
 from config import sampleImageProofsFinalMergedURL, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
-from db_handler import load_user_data, save_user_data, save_dm_link_to_database, save_epic_name_to_database, save_image_to_database, save_video_to_database
+from db_handler import DB_DIR, load_user_data, save_user_data, save_dm_link_to_database, save_epic_name_to_database, save_image_to_database, save_video_to_database, init_pg
 from config import sample_image_urls, sample_video_urls
 from ratelimit import RateLimitQueue, request_handler
 
@@ -198,13 +199,22 @@ async def on_raw_reaction_add(payload):
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
+    print("🔍 Registered Slash Commands:", await bot.tree.fetch_commands())
+    #await bot.tree.sync()
+    #print("🔍 Registered Slash Commands:", await bot.tree.fetch_commands())
+
+    await asyncio.sleep(15)  # ✅ Small delay before connecting to DB
+    await init_pg()
 
     asyncio.create_task(rate_limiter.worker(request_handler))
     print("✅ Started worker of RateLimitQueue(50) succesfully!")
 
 
-    #print("✅✅✅✅✅✅✅✅✅BEgin of Testing")
-    guild = bot.get_guild(GUILD_ID)  # Replace with your server ID
+    print("✅✅✅✅✅✅✅✅✅BEgin of Testing")
+
+    #await asyncio.sleep(5)
+    #asyncio.create_task(stress_test_concurrent_users(50))
+
 
     # Test rate limit queue system
 
@@ -394,9 +404,11 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
                         user_weights.append(points)
                         total_points += points
     
-    else:
+    else: 
         for reaction in giveaway_message.reactions:    # FOR USERS THAT HAVE REACTED/ ACCESS TO GIVEAWAY
+            
             async for user in reaction.users():
+                print(user)
                 if user.bot:  # Skip the bot itself
                     continue
     
@@ -468,6 +480,18 @@ def weighted_random_selection(participants, user_weights, num_winners):
 
     return selected_winners
 
+
+@bot.tree.command(name="stresstest")
+async def stresstest(interaction: discord.Interaction, frequency: int):
+    """Starts a stress test with the specified frequency (in seconds)."""
+    asyncio.create_task(stress_test_concurrent_users(frequency))
+
+    await interaction.response.send_message(f"Stress test started with frequency {frequency}")
+
+@bot.command(name="sync2")
+async def sync2(ctx):
+    await bot.tree.sync()
+    await ctx.send("✅ Slash commands synced2! commands: ", await bot.tree.fetch_commands())
     
 
 
@@ -537,21 +561,34 @@ def notify():
     discord_id = int(data["discord_id"])
     file_type = data["file_type"]
     status = data["status"]
+    comment = data["comment"]
 
     guild = bot.get_guild(GUILD_ID)
     user = guild.get_member(discord_id)
-
-    user_data = load_user_data(discord_id)
-
     if not user:
         return {"error": "User not found"}, 404
+
+    user_data = load_user_data(discord_id)
+    if not user_data:
+        return {"error: user data not found"}, 404
         
     # ✅ Notify the user in their DMs
     embed = discord.Embed(color=discord.Color.blue())
 
     if file_type == "image":
         if status == "approved":
-        
+            # update user entry .json file
+            if user_data["images"]:
+                image = user_data["images"][-1]
+                if image.get("image_status") == "pending":
+                    image["image_status"] = status
+                    user_data["step_state"] = "video_proof"
+                    user_data["points_assigned"] = 1
+                    if comment:
+                        image["comment"] = comment
+                    save_user_data(discord_id, user_data, bot.loop)
+
+            # create discord notification to user
             giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
             if giveaway_channel:
                 embed.title = "✅ Dein Beweisbild wurde **akzeptiert**!"
@@ -565,28 +602,65 @@ def notify():
                 asyncio.run_coroutine_threadsafe(giveaway_channel.set_permissions(user, read_messages=True), bot.loop)
 
         elif status == "denied":
+
+            # update user entry .json file
+            if user_data["images"]:
+                image = user_data["images"][-1]
+                if image.get("image_status") == "pending":
+                    image["image_status"] = status
+                    user_data["step_state"] = "image_proof"
+                    if comment:
+                        image["comment"] = comment
+                    save_user_data(discord_id, user_data, bot.loop)
+
+            # create discord notification to user
             embed.title = "❌ Dein Beweisbild wurde **abgelehnt**"
-            faq_channel = bot.get_channel(FAQ_CHANNEL_ID)
             embed.description = (
-                f"📝 Grund: {data['reason']}\n\n"
+                f"📝 Grund: {comment}\n\n"
                 f"➡️ **Bitte lade ein neues Bild hoch**, das alle Anforderungen erfüllt!"
             )
             embed.color = discord.Color.red()
 
     elif file_type == "video":
         if status == "approved":
+            # update user entry .json file
+            points_added = data["points_added"]
+            if user_data["videos"]:
+                video = user_data["videos"][-1]
+                if video.get("video_status") == "pending":
+                    video["video_status"] = status
+                    user_data["step_state"] = "video_proof"
+                    if comment:
+                        video["comment"] = comment
+                    if points_added:   
+                        video["points_added"] = points_added
+                        user_data["points_assigned"] += points_added
+                    save_user_data(discord_id, user_data, bot.loop)
+
+            # create discord notification to user
             embed.title = "✅ Dein Beweisvideo wurde **akzeptiert**!"
             embed.description = (
-                f"🏆 **Du hast dafür +{data['points_added']}x Gewinnchancen erhalten!** 🏆\n"
+                f"🏆 **Du hast dafür +{points_added}x Gewinnchancen erhalten!** 🏆\n"
                 f"🔥 Jetzt hast du insgesamt **{user_data['points_assigned']}x Gewinnchancen**, Damn! 🔥\n\n"
             )
             embed.set_footer(text="Danke für deinen Support! ❤️")
             embed.color = discord.Color.gold()
-        else:
+            
+        elif status == "denied":
+            # update user entry .json file
+            if user_data["videos"]:
+                video = user_data["videos"][-1]
+                if video.get("video_status") == "pending":
+                    video["video_status"] = status
+                    user_data["step_state"] = "video_proof"
+                    if comment:
+                        video["comment"] = comment
+                    save_user_data(discord_id, user_data, bot.loop)
+
+            # create discord notification to user
             embed.title = "❌ Dein Beweisvideo wurde **abgelehnt**!"
-            faq_channel = bot.get_channel(FAQ_CHANNEL_ID)
             embed.description = (
-                f"📝 Grund: {data['reason']}\n\n"
+                f"📝 Grund: {comment}\n\n"
                 f"➡️ **Bitte sende einen neuen [streamable.com Video Link](https://streamable.com)**, das alle Anforderungen erfüllt."
             )
             embed.color = discord.Color.red()
@@ -615,11 +689,15 @@ async def simulate_user_traffic(i):
     print(f"Starting user traffic simulation for user {i}")
     
     save_epic_name_to_database(i, f"discord_name_{i}", f"epic_name_{i}")
+    await asyncio.sleep(0.1)
     save_image_to_database(i, sample_image_urls[i % len(sample_image_urls)])
+    await asyncio.sleep(0.1)
     save_video_to_database(i,sample_video_urls[i % len(sample_video_urls)])
+    await asyncio.sleep(0.1)
 
 async def stress_test_concurrent_users(frequency=10):
     """Run multiple database writes concurrently."""
+    print(f"Starting stress test with {frequency} concurrent users")
     start_time = time.time()  # Start measuring time
 
     # Create tasks for multiple concurrent executions
@@ -729,6 +807,15 @@ def epic_callback():
 
 if __name__ == "__main__":
 
+    # ❌DANGER❌ DELETE local fileystem database at /data which we alse be the case when restarting the deployed bot
+    if os.path.exists(DB_DIR):
+        shutil.rmtree(DB_DIR)
+        print(f"🗑️ Deleted directory: {DB_DIR}")
+    else:
+        print(f"❌ Directory does not exist: {DB_DIR}")
+    time.sleep(3)
+    os.makedirs(DB_DIR, exist_ok=True)  # reset the database
+    
     reviewer_app_thread = threading.Thread(target=run_reviewer_app)
     reviewer_app_thread.start()
     

@@ -28,3 +28,5 @@ typing_extensions    #==4.1.1 # changed this from 4.12.2 to 4.1.1
 urllib3==2.3.0
 Werkzeug==2.3.8
 yarl==1.18.3
+asyncpg
+replit-object-storage

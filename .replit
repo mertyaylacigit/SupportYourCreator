@@ -1,5 +1,5 @@
 entrypoint = "main.py"
-modules = ["python-3.10", "postgresql-16"]
+modules = ["postgresql-16", "python-3.10", "python-3.11"]
 
 hidden = [".pythonlibs"]
 
@@ -8,5 +8,19 @@ channel = "stable-23_05"
 
 [deployment]
 run = ["python", "main.py"]
-deploymentTarget = "gce"
-ignorePorts = true
+deploymentTarget = "cloudrun"
+build = ["sh", "-c", "pip install -r requirements.txt"]
+
+[[ports]]
+localPort = 5001
+externalPort = 3000
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[workflows]
+runButton = "run main in development environment"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-40d5e5aa-74f2-48ef-aabc-8a967200100e"
