@@ -5,12 +5,38 @@ import os
 import shutil
 import sys
 import requests
+import logging
+import aiohttp
+import aiofiles
 from datetime import datetime
 from replit.object_storage import Client
-from config import IMAGESVIDEOS_BUCKET_ID
+from config import IMAGESVIDEOS_BUCKET_ID, DATABASE_URL, LOGGING_LEVEL
+from queues import PGQueue, ObjectStorageQueue
+
+
+# ✅ Setup logging configuration
+logging.basicConfig(
+    level=LOGGING_LEVEL,  # Capture ALL logs (INFO, DEBUG, ERROR)  # Set to DEBUG if you want to see debug logs of discord.http's request function
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Ensure logs are printed to Replit console
+    ]
+)
+logger = logging.getLogger(__name__)  # ✅ Use logger instead of print()
+
+
+logger.info(f"📁 Database URL: {DATABASE_URL}")
 
 db_pool = None
+logger.info("✅✅✅✅✅   db_pool = None  ✅✅✅✅✅")
 bucketClient = Client(bucket_id=IMAGESVIDEOS_BUCKET_ID)
+
+pg_queue = PGQueue(max_workers=4) 
+object_storage_queue = ObjectStorageQueue(max_workers=4) # increase max_workers to parallelize uploads
+logger.info("✅ Created PGQueue and ObjectStorageQueue successfully!")
+
+PG_SEMAPHORE = asyncio.Semaphore(10)  # Limit the number of concurrent database operations to 10
+OBJECT_STORAGE_SEMAPHORE = asyncio.Semaphore(10) # to prevent "Connection pool is full, discarding connection: storage.googleapis.com. Connection pool size: 10"
 
 # Define storage location for user files
 DB_DIR = "data"
@@ -62,83 +88,80 @@ def load_user_data(discord_id):
             return json.load(file)
     return None  # User file does not exist
 
-def download_image(media_url, image_name):
-    """Downloads a image file from the given URL in Discords CDN and saves it locally and in persistent object storage."""
+async def download_image(media_url, image_name):
+    """Downloads an image asynchronously and saves it locally."""
     try:
-        response = requests.get(media_url)
-        response.raise_for_status()  # Raise an exception for HTTP errors
-
-        # Save the media file
         file_path = os.path.join(DB_DIR, image_name)
-        with open(file_path, "wb") as media_file:
-            media_file.write(response.content)
 
-        # Upload the media file to persistent object storage
-        # 🔄 Run upload in the background asynchronously
-        asyncio.create_task(async_upload_to_object_storage(file_path, image_name))
-    
-        print(f"✅ Image {image_name} saved in filesystem and object storage")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(media_url) as response:
+                response.raise_for_status()
+
+                async with aiofiles.open(file_path, "wb") as image_file:
+                    await image_file.write(await response.read())
+
+        # ✅ Queue upload instead of blocking
+        asyncio.create_task(object_storage_queue.add_task(async_upload_to_object_storage, file_path, image_name))
+
+        logger.info(f"✅ Image {image_name} saved locally and queued for object storage upload.")
         return file_path
-    except requests.RequestException as e:
-        print(f"❌ Failed to download image: {e}")
+    except Exception as e:
+        logger.info(f"❌ Failed to download image: {e}")
         return None
 
 
-def download_video(streamable_url, video_name):
-    """Downloads a video from Streamable and saves it locally and in persistent object storage."""
-    
-    def get_streamable_direct_url(streamable_url):
-        """Fetches the direct MP4 URL from a Streamable video link."""
+async def download_video(streamable_url, video_name):
+    """Downloads a video from Streamable asynchronously and saves it locally."""
+
+    async def get_streamable_direct_url(streamable_url):
+        """Fetches the direct MP4 URL from a Streamable video link asynchronously."""
         try:
-            video_id = streamable_url.split("/")[-1]  # Extract video ID from URL
+            video_id = streamable_url.split("/")[-1]  
             api_url = f"https://api.streamable.com/videos/{video_id}"
 
-            response = requests.get(api_url)
-            response.raise_for_status()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as response:
+                    response.raise_for_status()
+                    data = await response.json()
 
-            data = response.json()
-            if "files" in data and "mp4" in data["files"]:
-                direct_url = data["files"]["mp4"]["url"]
-                return direct_url
-            else:
-                print("❌ No direct MP4 URL found.")
-                return None
-        except requests.RequestException as e:
-            print(f"❌ Failed to fetch Streamable metadata: {e}")
-            return None
+                    if "files" in data and "mp4" in data["files"]:
+                        return data["files"]["mp4"]["url"]
+        except Exception as e:
+            logger.info(f"❌ Failed to fetch Streamable metadata: {e}")
+        return None
 
-    
     try:
-        direct_url = get_streamable_direct_url(streamable_url)
+        direct_url = await get_streamable_direct_url(streamable_url)
         if not direct_url:
-            return None  # Exit if no valid direct URL
+            return None  
 
-        response = requests.get(direct_url, stream=True)
-        response.raise_for_status()
-
-        # Save the video file locally
         file_path = os.path.join(DB_DIR, video_name)
-        with open(file_path, "wb") as video_file:
-            for chunk in response.iter_content(chunk_size=8192):
-                video_file.write(chunk)
 
-        # Upload the video file to Replit Object Storage
-        # 🔄 Run upload in the background asynchronously
-        asyncio.create_task(async_upload_to_object_storage(file_path, video_name))
+        async with aiohttp.ClientSession() as session:
+            async with session.get(direct_url) as response:
+                response.raise_for_status()
 
-        print(f"✅ Video {video_name} saved in filesystem and object storage")
+                async with aiofiles.open(file_path, "wb") as video_file:
+                    async for chunk in response.content.iter_chunked(8192):
+                        await video_file.write(chunk)
+
+        # ✅ Queue upload instead of blocking
+        asyncio.create_task(object_storage_queue.add_task(async_upload_to_object_storage, file_path, video_name))
+
+        logger.info(f"✅ Video {video_name} saved locally and queued for object storage upload.")
         return file_path
-    except requests.RequestException as e:
-        print(f"❌ Failed to download video: {e}")
+    except Exception as e:
+        logger.info(f"❌ Failed to download video: {e}")
         return None
 
 async def async_upload_to_object_storage(file_path, medium_name):
     """Asynchronously uploads a file to Replit Object Storage."""
-    try:
-        await asyncio.to_thread(bucketClient.upload_from_filename, medium_name, file_path)
-        print(f"✅ Asynchronously uploaded {medium_name} to object storage.")
-    except Exception as e:
-        print(f"❌ Failed to upload {medium_name} to object storage: {e}")
+    async with OBJECT_STORAGE_SEMAPHORE:
+        try:
+            await asyncio.to_thread(bucketClient.upload_from_filename, medium_name, file_path)
+            logger.info(f"✅ Asynchronously uploaded {medium_name} to object storage.")
+        except Exception as e:
+            logger.info(f"❌ Failed to upload {medium_name} to object storage: {e}")
 
 # END OF GET
 
@@ -149,28 +172,28 @@ async def async_upload_to_object_storage(file_path, medium_name):
 # POST
 
 # ✅ Save user data
-def save_user_data(discord_id, data, loop=None):
+def save_user_data(discord_id, data, only_local=False, loop=None):
     """Saves user data to their individual JSON file and updates PostgreSQL asynchronously."""
     file_path = get_user_file(discord_id)
 
     with open(file_path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=4)
 
-    # Ensure database saving happens inside the correct event loop
-    try:
-        running_loop = asyncio.get_running_loop()
-        running_loop.create_task(save_user_data_to_pg(discord_id, data))  # ✅ Run async if loop is active
-        print(f"✅ save_user_data_to_pg() running inside existing loop for {discord_id}")
-    except RuntimeError:
+    if not only_local:
+        #✅ Add database save to queue instead of direct call
         if loop:
-            future = asyncio.run_coroutine_threadsafe(save_user_data_to_pg(discord_id, data), loop)
-            future.result()  # Ensures proper exception handling
-            print(f"✅ save_user_data_to_pg() executed inside bot loop for {discord_id}")
+            loop.create_task(pg_queue.add_task(save_user_data_to_pg, discord_id, data=data))
+            logger.debug(f"✅ /notify save_user_data_to_pg() scheduled in bot loop for {discord_id} for ")
         else:
-            asyncio.run(save_user_data_to_pg(discord_id, data))  # Fallback (not recommended in prod)
-            print(f"⚠️ save_user_data_to_pg() executed with asyncio.run() for {discord_id}")
+            try:
+                running_loop = asyncio.get_running_loop()
+                running_loop.create_task(pg_queue.add_task(save_user_data_to_pg, discord_id, data=data))
+            except RuntimeError:
+                asyncio.run(pg_queue.add_task(save_user_data_to_pg, discord_id, data=data))  # Blocking fallback
 
-        
+        logger.debug(f"✅ save_user_data_to_pg() queued for {discord_id}")
+
+
 
 
 # ✅ Save DM link
@@ -182,16 +205,13 @@ def save_dm_link_to_database(discord_id, dm_link):
     user_data["dm_link"] = dm_link 
 
     save_user_data(discord_id, user_data)  # Save back to file
-    print(f"✅ Saved Epic Games ID for user {discord_id}")
+    logger.info(f"✅ Saved Epic Games ID for user {discord_id}")
 
 # ✅ Save Epic Games ID
 def save_epic_name_to_database(discord_id, discord_name, epic_name):
     """Saves the Epic Games ID for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
-
-    save_user_data(discord_id, user_data)  # Save back to file
-    print(f"✅ Saved Epic Games ID for user {discord_id}")
 
     if (user_data["epic_name"] is None):
         user_data["epic_name"] = str(epic_name)
@@ -200,22 +220,22 @@ def save_epic_name_to_database(discord_id, discord_name, epic_name):
         user_data["step_state"] = "image_proof"  # The user's next step is to upload image proof
         
     else: # user proofed already epic name
-        print(f"❌ User {discord_id} already proofed their Epic Games name {user_data['epic_name']}")
+        logger.info(f"❌ User {discord_id} already proofed their Epic Games name {user_data['epic_name']}")
         return False
 
     save_user_data(discord_id, user_data)  # Save back to file
-    print(f"✅ Saved Epic Games ID for user {discord_id}")
+    logger.info(f"✅ Saved Epic Games ID for user {discord_id}")
     return True
 
 # ✅ Save Image Proof
-def save_image_to_database(discord_id, image_url):
+async def save_image_to_database(discord_id, image_url):
     """Saves the image data for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
 
     # Download image from Discord's CDN
     image_name = f"{discord_id}_{len(user_data['images']) + 1}.png"
-    downloaded_image_path = download_image(image_url, image_name)
+    downloaded_image_path = await download_image(image_url, image_name)
 
     # Add image data to the user's images list
     user_data["images"].append({
@@ -227,17 +247,17 @@ def save_image_to_database(discord_id, image_url):
     user_data["step_state"] = "wait"  # The user should wait for a response
 
     save_user_data(discord_id, user_data)  # Save back to file
-    print(f"✅ Saved image proof for user {discord_id}")
+    logger.info(f"✅ Saved image proof for user {discord_id}")
 
 # ✅ Save Video Proof
-def save_video_to_database(discord_id, streamable_video_url):
+async def save_video_to_database(discord_id, streamable_video_url):
     """Saves the video data for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
 
     # Download video from Streamable's CDN
     video_name = f"{discord_id}_{len(user_data['videos']) + 1}.mp4"
-    downloaded_video_path = download_video(streamable_video_url, video_name)
+    downloaded_video_path = await download_video(streamable_video_url, video_name)
 
     # Add video data to the user's videos list
     user_data["videos"].append({
@@ -249,9 +269,8 @@ def save_video_to_database(discord_id, streamable_video_url):
     user_data["step_state"] = "wait"  # The user should wait for a response
 
     save_user_data(discord_id, user_data)  # Save back to file
-    print(f"✅ Saved video proof for user {discord_id}")
+    logger.info(f"✅ Saved video proof for user {discord_id}")
 
-    # TODO: Find a solution to save the actual video file to the database
 
 # --- END OF POST ---
 
@@ -261,11 +280,20 @@ def save_video_to_database(discord_id, streamable_video_url):
  
 async def init_pg():
     """Initializes PostgreSQL: Creates connection pool, ensures table, and restores filesystem."""
+    asyncio.create_task(pg_queue.start_workers())
+    asyncio.create_task(object_storage_queue.start_workers())  # Start object storage workers
+    logger.info("✅ Started workers for PGQueue and ObjectStorageQueue successfully!")
+    
     global db_pool
-    db_pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"))  # Initialize database pool
+    logger.info(f"🔄 Initializing PostgreSQL with DATABSE_URL: {DATABASE_URL}")
+    try:
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)  # Limit connections
+        logger.info("✅ PostgreSQL initialized successfully!")
+    except Exception as e:
+        logger.info(f"❌ Failed to initialize PostgreSQL: {e}")
     await create_table()  # Ensure DB structure
     await restore_filesystem_from_db()  # Restore filesystem from DB
-    print("✅ PostgreSQL initialized successfully.")
+    logger.info("✅ PostgreSQL initialized successfully.")
 
 async def create_table():
     """Ensures that the users table exists."""
@@ -284,12 +312,35 @@ async def create_table():
                 reacted_hand BOOLEAN DEFAULT FALSE
             )
         """)
-    print("✅ Database table ensured.")
+    logger.info("✅ Database table ensured.")
 
 async def restore_filesystem_from_db():
     """Restores the local filesystem from PostgreSQL on bot startup, including pending images."""
+    # Begrenze gleichzeitige Downloads auf 8, um den Pool von 10 nicht zu überlasten
+
+    async def download_image_from_bucket(image_name, file_path):
+        """Wrapper to download images mit Rate-Limitierung."""
+        async with OBJECT_STORAGE_SEMAPHORE:  # Begrenze gleichzeitige Downloads
+            try:
+                await asyncio.to_thread(bucketClient.download_to_filename, image_name, file_path)
+                logger.info(f"✅ Restored pending image {image_name} from object storage to {file_path}")
+            except Exception as e:
+                logger.error(f"❌ Failed to restore image {image_name}: {e}")
+
+    async def download_video_from_bucket(video_name, file_path):
+        """Wrapper to download videos mit Rate-Limitierung."""
+        async with OBJECT_STORAGE_SEMAPHORE:
+            try:
+                await asyncio.to_thread(bucketClient.download_to_filename, video_name, file_path)
+                logger.info(f"✅ Restored pending video {video_name} from object storage to {file_path}")
+            except Exception as e:
+                logger.error(f"❌ Failed to restore video {video_name}: {e}")
+
+    
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("SELECT * FROM users")
+
+        tasks = []  # Store tasks for concurrent execution
 
         for row in rows:
             user_data = {
@@ -306,93 +357,84 @@ async def restore_filesystem_from_db():
             }
 
             # ✅ Save user data in the filesystem
-            save_user_data(user_data["discord_id"], user_data)
-            print(f"✅ Restored user {row['discord_id']} from PostgreSQL to filesystem")
+            save_user_data(user_data["discord_id"], user_data, only_local=True)
+            logger.info(f"✅ Restored user {row['discord_id']} from PostgreSQL to filesystem")
 
             # ✅ Restore pending images from Object Storage
             for image in user_data["images"]:
-                if image["image_status"] == "pending":  # Only restore pending images
+                if image["image_status"] == "pending":
                     image_name = os.path.basename(image["image_path"])
                     file_path = os.path.join(DB_DIR, image_name)
 
-                    # Check if file already exists locally
                     if not os.path.exists(file_path):
-                        try:
-                            # Save image from Replit Object Storage to fileystem database
-                            bucketClient.download_to_filename(image_name, file_path)
-
-                            print(f"✅ Restored pending image {image_name} from object storage to {file_path}")
-
-                        except Exception as e:
-                            print(f"❌ Failed to restore image {image_name}: {e}")
+                        tasks.append(download_image_from_bucket(image_name, file_path))
 
             # ✅ Restore pending videos from Object Storage
             for video in user_data["videos"]:
-                if video["video_status"] == "pending":  # Only restore pending video
+                if video["video_status"] == "pending":
                     video_name = os.path.basename(video["video_path"])
                     file_path = os.path.join(DB_DIR, video_name)
 
-                    # Check if file already exists locally
                     if not os.path.exists(file_path):
-                        try:
-                            # Save video from Replit Object Storage to fileystem database
-                            bucketClient.download_to_filename(video_name, file_path)
+                        tasks.append(download_video_from_bucket(video_name, file_path))
 
-                            print(f"✅ Restored pending video {video_name} from object storage to {file_path}")
+        # Run all downloads concurrently
+        await asyncio.gather(*tasks)
 
-                        except Exception as e:
-                            print(f"❌ Failed to restore video {video_name}: {e}")
+    
 
 
 
 async def save_user_data_to_pg(discord_id, data):
     """Saves user data asynchronously in PostgreSQL."""
+    logger.debug(f" db_pool check: {db_pool}")
     try:
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO users (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, videos, step_state, points_assigned, reacted_hand)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (discord_id) DO UPDATE SET
-                    discord_name = EXCLUDED.discord_name,
-                    dm_link = EXCLUDED.dm_link,
-                    epic_name = EXCLUDED.epic_name,
-                    timestamp_epic_name = EXCLUDED.timestamp_epic_name,
-                    images = EXCLUDED.images,
-                    videos = EXCLUDED.videos,
-                    step_state = EXCLUDED.step_state,
-                    points_assigned = EXCLUDED.points_assigned,
-                    reacted_hand = EXCLUDED.reacted_hand
-            """, 
-                str(discord_id),
-                data["discord_name"],
-                data["dm_link"],
-                data["epic_name"],
-                data["timestamp_epic_name"],
-                json.dumps(data["images"]),
-                json.dumps(data["videos"]),
-                data["step_state"],
-                data.get("points_assigned", 0),
-                data["reacted_hand"]
-            )
-
-            print(f"✅ Data insert executed for user {discord_id}")
+        async with PG_SEMAPHORE:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO users (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, videos, step_state, points_assigned, reacted_hand)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        discord_name = EXCLUDED.discord_name,
+                        dm_link = EXCLUDED.dm_link,
+                        epic_name = EXCLUDED.epic_name,
+                        timestamp_epic_name = EXCLUDED.timestamp_epic_name,
+                        images = EXCLUDED.images,
+                        videos = EXCLUDED.videos,
+                        step_state = EXCLUDED.step_state,
+                        points_assigned = EXCLUDED.points_assigned,
+                        reacted_hand = EXCLUDED.reacted_hand
+                """, 
+                    str(discord_id),
+                    data["discord_name"],
+                    data["dm_link"],
+                    data["epic_name"],
+                    data["timestamp_epic_name"],
+                    json.dumps(data["images"]),
+                    json.dumps(data["videos"]),
+                    data["step_state"],
+                    data.get("points_assigned", 0),
+                    data["reacted_hand"]
+                )
+    
+                logger.debug(f"save_user_data_to_pg() executed for user {discord_id}")
 
     except Exception as e:
-        print(f"❌ Error while saving data for user {discord_id}: {e}")
+        logger.info(f"❌ Error while saving data for user {discord_id}: {e}")
 
 
 async def delete_users_table():
     """Deletes all data from the 'users' table in PostgreSQL."""
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        print("❌ DATABASE_URL not found!")
+        logger.info("❌ DATABASE_URL not found!")
         return
 
     conn = await asyncpg.connect(db_url)
 
     try:
         await conn.execute("TRUNCATE TABLE users CASCADE;")  # Delete all data in 'users' table
-        print("🗑 Cleared all data in 'users' table.")
+        logger.info("🗑 Cleared all data in 'users' table.")
     finally:
         await conn.close()
 
@@ -413,25 +455,25 @@ if __name__ == "__main__":
             save_epic_name_to_database(i, f"discord_name_{i}", f"epic_name_{i}")
 
     elif len(sys.argv) > 1 and sys.argv[1] == "getkey":
-        print(load_user_data("99998"))
+        logger.info(load_user_data("99998"))
 
     elif len(sys.argv) > 1 and sys.argv[1] == "DELETE":
         # delete user entries in filesystem
         if os.path.exists(DB_DIR):
             shutil.rmtree(DB_DIR)
-            print(f"🗑️ Deleted directory: {DB_DIR}")
+            logger.info(f"🗑️ Deleted directory: {DB_DIR}")
         else:
-            print(f"❌ Directory does not exist: {DB_DIR}")
+            logger.info(f"❌ Directory does not exist: {DB_DIR}")
         os.makedirs(DB_DIR, exist_ok=True)  # reset the database
         # delete user entries in postgresql
         asyncio.run(delete_users_table())
         # delete images/videos in object storage bucket
         for key in bucketClient.list():
-            print(key.name)
+            logger.info(key.name)
             bucketClient.delete(key.name)
-            print(f"🗑 Deleted object: {key.name}")
-        print("✅ Delete complete!")
+            logger.info(f"🗑 Deleted object: {key.name}")
+        logger.info("✅ Delete complete!")
 
     else:
-        print("No argument provided!")
+        logger.info("No argument provided!")
 

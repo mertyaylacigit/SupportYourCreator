@@ -1,5 +1,6 @@
 import discord
 import os 
+import sys
 import shutil
 import json 
 import asyncio
@@ -12,20 +13,33 @@ from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
 from config import TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, CATEGORY_ID, GUILD_ID, FAQ_CHANNEL_ID, MERT_DISCORD_ID, TESTING_CHANNEL_ID
 from config import sampleImageProofsFinalMergedURL, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
-from db_handler import DB_DIR, load_user_data, save_user_data, save_dm_link_to_database, save_epic_name_to_database, save_image_to_database, save_video_to_database, init_pg
-from config import sample_image_urls, sample_video_urls
-from ratelimit import RateLimitQueue, request_handler
+from db_handler import db_pool, DB_DIR, load_user_data, save_user_data, save_dm_link_to_database, save_epic_name_to_database, save_image_to_database, save_video_to_database, init_pg
+from config import sample_image_urls, sample_video_urls, LOGGING_LEVEL
+from queues import RateLimitQueue
+import asyncpg
 
 from flask import Flask, request
 import threading
 from reviewGUI.app import app
 
-logging.basicConfig(level=logging.INFO)  # Set to DEBUG if you want to see debug logs of discord.http's request function
+
+# ✅ Setup logging configuration
+logging.basicConfig(
+    level=LOGGING_LEVEL,  # Capture ALL logs (INFO, DEBUG, ERROR)  # Set to DEBUG if you want to see debug logs of discord.http's request function
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Ensure logs are printed to Replit console
+    ]
+)
+logger = logging.getLogger(__name__)  # ✅ Use logger instead of print()
+
+
 # app that handles /notify
 discord_app = Flask(__name__)
 
 # Flask app that handles the reviewer webserver
 reviewer_app = app
+
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -35,7 +49,7 @@ intents.members = True
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 rate_limiter = RateLimitQueue(50)
-print("✅ created RateLimitQueue(50) succesfully!")
+logger.info("✅ created RateLimitQueue(50) succesfully!")
 
 
 @bot.event
@@ -66,9 +80,9 @@ async def on_message(message):
                 if file_type in attachment.content_type:
                     if file_type == "image":
                         if user_data["step_state"] == "image_proof":
-                            #print(f" It is a {attachment.content_type} file.")
+                            #logger.info(f" It is a {attachment.content_type} file.")
                             image_url = attachment.url
-                            save_image_to_database(message.author.id, image_url)
+                            await save_image_to_database(message.author.id, image_url)
                              #✅ Send confirmation message
                             embed = discord.Embed(
                                 description="⏳ **Wir werden dein Beweisbild prüfen und uns eigenständig bei dir melden.**\n\n"
@@ -92,9 +106,9 @@ async def on_message(message):
                         return
         # check if message is the URL Link to the uploaded video on streamable.com
         if "streamable.com" in message.content:
-            #print(f" It is a {attachment.content_type} file. TODO: video handling")
+            #logger.info(f" It is a {attachment.content_type} file. TODO: video handling")
             streamable_video_url = message.content
-            save_video_to_database(message.author.id, streamable_video_url)
+            await save_video_to_database(message.author.id, streamable_video_url)
             #✅ Send confirmation message
             embed = discord.Embed(
                 description="⏳ **Wir werden dein Beweisvideo 🎥 prüfen und uns eigenständig bei dir melden.**\n\n"
@@ -129,7 +143,7 @@ async def on_raw_reaction_add(payload):
             if giveaway_channel:
                 bot.giveaway_message = await rate_limiter.add_request(giveaway_channel.fetch_message, (giveaway_data["message_id"],), {})
                 giveaway_message = bot.giveaway_message
-                print("✅ Cached giveaway message.")
+                logger.info("✅ Cached giveaway message.")
         else:
             giveaway_message = bot.giveaway_message
 
@@ -139,19 +153,19 @@ async def on_raw_reaction_add(payload):
         # search user inside bots cache before fetchign from API
         user = bot.get_user(payload.user_id)
         if user is None:
-            print("User not found.")
+            logger.error("❌ User not found.")
             user = await rate_limiter.add_request(bot.fetch_user, (payload.user_id,), {})
-        print("User found:", user)
+        logger.debug(f"User found: {user}")
 
         if user and not user.bot:  # Ignore bot reactions
             # Load user data
             user_data = load_user_data(user.id)
             if user_data is None:
-                print(f"User {user.id} not found in the database.")
+                logger.debug(f"User {user.id} not found in the database.")
                 return
             # Check if the user has already reacted before
             if user_data.get("reacted_hand", False):
-                print(f"User has already reacted.{user_data['reacted_hand'], user_data['discord_id']}")
+                logger.debug(f"User has already reacted.{user_data['reacted_hand'], user_data['discord_id']}")
                 return  # User already reacted, do nothing
             
         
@@ -183,34 +197,37 @@ async def on_raw_reaction_add(payload):
             # ✅ Send the embed to the user DM
             await rate_limiter.add_request(user.send, (), 
                 {"embed": embed})
-            print(f"✅ Embed sent to {user.name}'s DMs.")
 
             # ✅ Update user data to mark them as reacted
             user_data["reacted_hand"] = True
             save_user_data(user.id, user_data)  # Save back to the database
-            print(f"✅ {user.name} has reacted to the giveaway message.")
+            logger.debug(f"✅ {user.name} has reacted to the giveaway message.")
 
         else:
-            print(f"❌ User {user.id} not found.")
+            logger.error(f"❌ User {user.id} not found.")
 
 
 
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
-    print("🔍 Registered Slash Commands:", await bot.tree.fetch_commands())
+    logger.info(f"✅ Logged in as {bot.user}")
+    #logger.info("🔍 Registered Slash Commands:")
+    #logger.info(await bot.tree.fetch_commands())
     #await bot.tree.sync()
-    #print("🔍 Registered Slash Commands:", await bot.tree.fetch_commands())
+    #logger.info(await bot.tree.fetch_commands())
 
-    await asyncio.sleep(15)  # ✅ Small delay before connecting to DB
+    await asyncio.sleep(1)  # ✅ Small delay before connecting to DB
+    logger.info(f"✅✅✅ `db_pool` before init_pg(): {db_pool}")
     await init_pg()
+    logger.info(f"✅✅✅ `db_pool` after init_pg(): {db_pool}")
+    logger.info("✅ Connected to the database. ✅✅✅✅✅✅✅✅✅✅")
 
-    asyncio.create_task(rate_limiter.worker(request_handler))
-    print("✅ Started worker of RateLimitQueue(50) succesfully!")
+    asyncio.create_task(rate_limiter.worker())
+    logger.info("✅ Started worker of RateLimitQueue(50) succesfully!")
 
 
-    print("✅✅✅✅✅✅✅✅✅BEgin of Testing")
+    #logger.info("✅✅✅✅✅✅✅✅✅BEgin of Testing")
 
     #await asyncio.sleep(5)
     #asyncio.create_task(stress_test_concurrent_users(50))
@@ -223,9 +240,9 @@ async def on_ready():
     ## Send 1 message in each of the 1000 channels WITHOUT QUEUE
     #channels = [channel for category in guild.categories for channel in category.channels if channel.name.startswith("test")]
     #tasks = [channel.send(f"Test message in {channel.name}") for channel in channels]
-    #print("created tasks")
+    #logger.info("created tasks")
     #await asyncio.sleep(3)
-    #print("Now gather")
+    #logger.info("Now gather")
     #await asyncio.gather(*tasks)
 
     #embed = discord.Embed(
@@ -242,20 +259,20 @@ async def on_ready():
     #channels = [channel for category in guild.categories for channel in category.channels if channel.name.startswith("test")]
     ##tasks = [rate_limiter.add_request(channel.send, (), {"content":f"Test message in {channel.name}"}) for channel in channels]
     #tasks = [rate_limiter.add_request(channel.send, (), {"embed":embed, "view":view}) for channel in channels]
-    #print("created tasks")
+    #logger.info("created tasks")
     #await asyncio.sleep(1)
-    #print("Now gather")
+    #logger.info("Now gather")
     #await asyncio.gather(*tasks)
 
     ## Send 1 message in each of the 1000 channels with QUEUE NOT using Discord API just print()
     #channels = [channel for category in guild.categories for channel in category.channels if channel.name.startswith("test")]
-    #tasks = [rate_limiter.add_request(print, (f"Test message in, {channel.name}"), {}) for channel in channels]
-    #print("created tasks")
+    #tasks = [rate_limiter.add_request(logger.info, (f"Test message in, {channel.name}"), {}) for channel in channels]
+    #logger.info("created tasks")
     #await asyncio.sleep(1)
-    #print("Now gather")
+    #logger.info("Now gather")
     #await asyncio.gather(*tasks)
 
-    #print("End of testing✅✅✅✅✅✅✅✅")
+    #logger.info("End of testing✅✅✅✅✅✅✅✅")
 
     # Re-register the view globally after restart because the view is not registered by default after restarting the bot and not sending the view
     bot.add_view(BaseView())
@@ -265,9 +282,9 @@ async def on_ready():
     ## sync for commands           #BUG/WARNING: this sync command took long and sometimes didnt terminate ending it rate limit ban...
     #try:                          #DOCUMENTATION: ...and it is also working without it
     #    synced = await bot.tree.sync()
-    #    print(f"✅ Synced {len(synced)} commands: {synced}")
+    #    logger.info(f"✅ Synced {len(synced)} commands: {synced}")
     #except Exception as e:
-    #    print(f"❌ Error syncing commands: {e}")   
+    #    logger.info(f"❌ Error syncing commands: {e}")   
 
     
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
@@ -277,9 +294,9 @@ async def on_ready():
         #for thread in channel.threads:
         #    try:
         #        await thread.delete()
-        #        print(f"🗑️ Thread gelöscht: {thread.name}")
+        #        logger.info(f"🗑️ Thread gelöscht: {thread.name}")
         #    except Exception as e:
-        #        print(f"❌ Konnte den Thread {thread.name} nicht löschen: {e}")
+        #        logger.info(f"❌ Konnte den Thread {thread.name} nicht löschen: {e}")
         #return
         #await channel.purge()
 
@@ -345,6 +362,7 @@ async def on_ready():
             
             #UNCOMMENT IF FAQ MESSAGE GOT DELETED
             #await rate_limiter.add_request(faq_channel.send, (), {"embed":faq_embed})
+            #logger.info("✅⚠️ Embed sent to FAQ channel.")
         
         embed = discord.Embed(
             title="🎉 Willkommen zu Amar's Giveaway🎁!",
@@ -361,24 +379,25 @@ async def on_ready():
         # UNCOMMENT IF GIVEAWAY MESSAGE GOT DELETED       # BUG: IF UNCOMMENCTING, THEN UPDATE THE MESSAGE ID IN THE GIVEAWAY.JSON FILE !!!
         #giveaway_message = await giveaway_channel.send(embed=embed)
         #await giveaway_message.add_reaction("✋")
+        #logger.info("✅⚠️ Embed sent to Giveaway channel.")
 
         # Store the message ID in a file
         
         #with open("giveaway.json", "w") as f:
         #    json.dump({"message_id": giveaway_message.id}, f)
-        print("Bot is ready!")
+        logger.info("✅Bot is ready!")
 
 
 @bot.tree.command(name="gewinnspiel", description="anzahl_gewinner Gewinner aller Supporter auslosen")
 async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
     """Draw NUMBER winners from the giveaway participants."""
     if interaction.channel_id != GIVEAWAY_CHANNEL_ID:
-        print(f"❌ Command not allowed in channel: {interaction.channel_id}")
+        logger.info(f"❌ Command not allowed in channel: {interaction.channel_id}")
         return
 
     giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
     if not giveaway_channel:
-        print(f"❌ Giveaway channel not found: {GIVEAWAY_CHANNEL_ID}")
+        logger.info(f"❌ Giveaway channel not found: {GIVEAWAY_CHANNEL_ID}")
         return
 
     with open("giveaway.json", "r") as f:
@@ -408,7 +427,6 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
         for reaction in giveaway_message.reactions:    # FOR USERS THAT HAVE REACTED/ ACCESS TO GIVEAWAY
             
             async for user in reaction.users():
-                print(user)
                 if user.bot:  # Skip the bot itself
                     continue
     
@@ -449,6 +467,7 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
 
     await rate_limiter.add_request(interaction.response.send_message, (), 
         {"embed": embed})
+    logger.info("✅ Giveaway results sent.")
 
 
 def weighted_random_selection(participants, user_weights, num_winners):
@@ -484,14 +503,19 @@ def weighted_random_selection(participants, user_weights, num_winners):
 @bot.tree.command(name="stresstest")
 async def stresstest(interaction: discord.Interaction, frequency: int):
     """Starts a stress test with the specified frequency (in seconds)."""
-    asyncio.create_task(stress_test_concurrent_users(frequency))
+    # Defer response to prevent expiration
+    await interaction.response.defer(thinking=True)
+    await stress_test_concurrent_users(frequency)
 
-    await interaction.response.send_message(f"Stress test started with frequency {frequency}")
+    # ✅ Send the final response
+    await interaction.followup.send(f"✅ Stress test completed with frequency {frequency}")
+    logger.info(f"✅⚠️Stress test started with frequency {frequency}")
 
-@bot.command(name="sync2")
-async def sync2(ctx):
+@bot.tree.command(name="sync2")
+async def sync2(interaction: discord.Interaction):
     await bot.tree.sync()
-    await ctx.send("✅ Slash commands synced2! commands: ", await bot.tree.fetch_commands())
+    await interaction.response.send_message(f"✅ Slash commands synced2! commands: {await bot.tree.fetch_commands()}")
+    logger.info("✅⚠️ Slash commands synced2! commands")
     
 
 
@@ -506,6 +530,7 @@ class BaseView(View):
 
         await rate_limiter.add_request(interaction.message.edit, (), # Update the message
             {"view": self})
+        logger.debug("✅⚠️ Buttons disabled.")
 
 
 class Welcome2VerifyView(BaseView):
@@ -553,7 +578,7 @@ class Verify2EnterIDView(BaseView):
 
 
 
-### ✅ FLASK API FOR REVIEWER ###
+### ✅ FLASK API FOR REVIEWER ###   # # ⚠️⚠️⚠️⚠️TODO DANGER: not using rate limiter! Look how /epic_auth solves it!⚠️⚠️⚠️⚠️⚠️⚠️
 @discord_app.route("/notify", methods=["POST"])
 def notify():
     """Handles notifications from the reviewer webserver."""
@@ -566,10 +591,12 @@ def notify():
     guild = bot.get_guild(GUILD_ID)
     user = guild.get_member(discord_id)
     if not user:
+        logger.error(f"❌⚠️ /notify User not found: {discord_id}")
         return {"error": "User not found"}, 404
 
     user_data = load_user_data(discord_id)
     if not user_data:
+        logger.error(f"❌⚠️ /notify User Data not found: {discord_id}")
         return {"error: user data not found"}, 404
         
     # ✅ Notify the user in their DMs
@@ -586,7 +613,7 @@ def notify():
                     user_data["points_assigned"] = 1
                     if comment:
                         image["comment"] = comment
-                    save_user_data(discord_id, user_data, bot.loop)
+                    save_user_data(discord_id, user_data, loop=bot.loop)
 
             # create discord notification to user
             giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
@@ -596,10 +623,11 @@ def notify():
                     "✨ **Du hast jetzt Zugang zum Giveaway-Channel!**\n"
                     f"➡️ **Gehe zum Giveaway-Kanal:** {giveaway_channel.mention}"
                 )
+                logger.debug(f"✅⚠️ Image approved: {discord_id}")
                 embed.set_footer(text="Danke für deinen Support! ❤️")
                 embed.color = discord.Color.green()
                 # ✅ Grant access to the Giveaway Channel
-                asyncio.run_coroutine_threadsafe(giveaway_channel.set_permissions(user, read_messages=True), bot.loop)
+                asyncio.run_coroutine_threadsafe(giveaway_channel.set_permissions(user, read_messages=True), bot.loop) # TODO DANGER: not using rate limiter!
 
         elif status == "denied":
 
@@ -611,7 +639,7 @@ def notify():
                     user_data["step_state"] = "image_proof"
                     if comment:
                         image["comment"] = comment
-                    save_user_data(discord_id, user_data, bot.loop)
+                    save_user_data(discord_id, user_data, loop=bot.loop)
 
             # create discord notification to user
             embed.title = "❌ Dein Beweisbild wurde **abgelehnt**"
@@ -619,6 +647,7 @@ def notify():
                 f"📝 Grund: {comment}\n\n"
                 f"➡️ **Bitte lade ein neues Bild hoch**, das alle Anforderungen erfüllt!"
             )
+            logger.debug(f"❌⚠️ Image denied: {discord_id}")
             embed.color = discord.Color.red()
 
     elif file_type == "video":
@@ -635,7 +664,7 @@ def notify():
                     if points_added:   
                         video["points_added"] = points_added
                         user_data["points_assigned"] += points_added
-                    save_user_data(discord_id, user_data, bot.loop)
+                    save_user_data(discord_id, user_data, loop=bot.loop)
 
             # create discord notification to user
             embed.title = "✅ Dein Beweisvideo wurde **akzeptiert**!"
@@ -643,6 +672,7 @@ def notify():
                 f"🏆 **Du hast dafür +{points_added}x Gewinnchancen erhalten!** 🏆\n"
                 f"🔥 Jetzt hast du insgesamt **{user_data['points_assigned']}x Gewinnchancen**, Damn! 🔥\n\n"
             )
+            logger.debug(f"✅⚠️ Video approved: {discord_id}")
             embed.set_footer(text="Danke für deinen Support! ❤️")
             embed.color = discord.Color.gold()
             
@@ -655,7 +685,7 @@ def notify():
                     user_data["step_state"] = "video_proof"
                     if comment:
                         video["comment"] = comment
-                    save_user_data(discord_id, user_data, bot.loop)
+                    save_user_data(discord_id, user_data, loop=bot.loop)
 
             # create discord notification to user
             embed.title = "❌ Dein Beweisvideo wurde **abgelehnt**!"
@@ -663,6 +693,7 @@ def notify():
                 f"📝 Grund: {comment}\n\n"
                 f"➡️ **Bitte sende einen neuen [streamable.com Video Link](https://streamable.com)**, das alle Anforderungen erfüllt."
             )
+            logger.debug(f"❌⚠️ Video denied: {discord_id}")
             embed.color = discord.Color.red()
 
     # ✅ Send the embed message in the user's DMs
@@ -675,38 +706,29 @@ def notify():
 def run_reviewer_app():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    if os.environ.get("ENVIRONMENT") == "deployment":
-        # In production, this will be handled by the deployment configuration
-        pass
-    else:
-        reviewer_app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=False)
-
+    reviewer_app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=False)
+    
 def run_discord_app():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    if os.environ.get("ENVIRONMENT") == "deployment":
-        # In production, this will be handled by the deployment configuration
-        pass
-    else:
-        discord_app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)
-
+    discord_app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)
 
 
 # TESTS
 
 async def simulate_user_traffic(i):
-    print(f"Starting user traffic simulation for user {i}")
+    logger.debug(f"Starting user traffic simulation for user {i}")
     
     save_epic_name_to_database(i, f"discord_name_{i}", f"epic_name_{i}")
     await asyncio.sleep(0.1)
-    save_image_to_database(i, sample_image_urls[i % len(sample_image_urls)])
+    await save_image_to_database(i, sample_image_urls[i % len(sample_image_urls)])
     await asyncio.sleep(0.1)
-    save_video_to_database(i,sample_video_urls[i % len(sample_video_urls)])
+    await save_video_to_database(i,sample_video_urls[i % len(sample_video_urls)])
     await asyncio.sleep(0.1)
 
 async def stress_test_concurrent_users(frequency=10):
     """Run multiple database writes concurrently."""
-    print(f"Starting stress test with {frequency} concurrent users")
+    logger.info(f"Starting stress test with {frequency} concurrent users")
     start_time = time.time()  # Start measuring time
 
     # Create tasks for multiple concurrent executions
@@ -714,7 +736,7 @@ async def stress_test_concurrent_users(frequency=10):
     await asyncio.gather(*tasks)  # Run all tasks concurrently
 
     end_time = time.time()  # End time
-    print(f"✅ Completed {frequency} tasks in {end_time - start_time:.2f} seconds!")
+    logger.info(f"✅ Completed {frequency} tasks in {end_time - start_time:.2f} seconds!")
 
 # --- END OF TESTS ---
 
@@ -738,10 +760,11 @@ def epic_callback():
             return user
         user = asyncio.run(fetch_user())
         if user is None:
-            print("User not found")
+            logger.error("User not found")
+            return "User not found, provide discord_id in request", 404
             
         
-    print("User found (/epic_auth):", user)
+    logger.debug(f"User found (/epic_auth): {user}")
 
     async def exchange_code():
         async with aiohttp.ClientSession() as session:
@@ -755,18 +778,18 @@ def epic_callback():
             start = time.time()
             async with session.post(token_url, data=data, auth=headers) as resp:
                 token_data = await resp.json()
-                #print(token_data)
+                #logger.info(token_data)
                 end = time.time()
             
                 access_token = token_data.get('access_token')
-                #print("got Token✅✅✅✅✅✅✅✅")
+                #logger.info("got Token✅✅✅✅✅✅✅✅")
 
                 async with session.get('https://api.epicgames.dev/epic/oauth/v1/userInfo', headers={
                     'Authorization': f'Bearer {access_token}'
                 }) as user_resp:
                     user_data = await user_resp.json()
-                    #print(user_data)
-                    print(f"✅ Linked {discord_id} to {user_data['preferred_username']}")
+                    #logger.info(user_data)
+                    logger.debug(f"✅ Linked {discord_id} to {user_data['preferred_username']}")
 
                     
                     db_resp = save_epic_name_to_database(user.id, user.name, user_data['preferred_username'])
@@ -795,6 +818,7 @@ def epic_callback():
                         ),
                         color=discord.Color.blue()
                     )
+                    logger.debug(f"✅⚠️ Epic Games Name saved: {user.id}. And Embed sent")
                     embed.set_image(url=sampleImageProofsFinalMergedURL)
                     embed.set_footer(text="Vielen Dank für deinen Support! ❤️")
                     await rate_limiter.add_request(user.send, (), 
@@ -811,30 +835,32 @@ def epic_callback():
 # --- END OF EPIC GAMES AUTHENTICATION ---
 
 
-
-
-
 if __name__ == "__main__":
 
     # ❌DANGER❌ DELETE local fileystem database at /data which we alse be the case when restarting the deployed bot
     if os.path.exists(DB_DIR):
         shutil.rmtree(DB_DIR)
-        print(f"🗑️ Deleted directory: {DB_DIR}")
+        logger.info(f"🗑️ Deleted directory: {DB_DIR}")
     else:
-        print(f"❌ Directory does not exist: {DB_DIR}")
-    time.sleep(3)
+        logger.info(f"❌ Directory does not exist: {DB_DIR}")
+    time.sleep(1)
     os.makedirs(DB_DIR, exist_ok=True)  # reset the database
+
+    
     
     reviewer_app_thread = threading.Thread(target=run_reviewer_app)
     reviewer_app_thread.start()
+    logger.info("✅⚠️ Flask server Reviewer started")
     
     # Start Flask in a separate thread
     discord_app_thread = threading.Thread(target=run_discord_app)
     discord_app_thread.start() # WARNING: dont notify when TESTING because populated discord user will end up in 400 errors of Discord API rate limit
-
+    logger.info("✅⚠️ Flask server Discord Notify Handler started")
+    
     #asyncio.run(stress_test_concurrent_users(10))
 
     bot.run(TOKEN)
+    logger.info("✅⚠️ Discord Bot started")
 
     
 

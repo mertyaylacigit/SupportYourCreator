@@ -32,3 +32,4 @@ asyncpg
 replit-object-storage
 gunicorn
 gunicorn
+aiofiles
