@@ -10,7 +10,7 @@ import aiohttp
 import aiofiles
 from datetime import datetime
 from replit.object_storage import Client
-from config import IMAGESVIDEOS_BUCKET_ID, DATABASE_URL, LOGGING_LEVEL
+from config import OBJECT_STORAGE_BUCKET_ID, DATABASE_URL, LOGGING_LEVEL
 from queues import PGQueue, ObjectStorageQueue
 
 
@@ -29,7 +29,7 @@ logger.info(f"📁 Database URL: {DATABASE_URL}")
 
 db_pool = None
 logger.info("✅✅✅✅✅   db_pool = None  ✅✅✅✅✅")
-bucketClient = Client(bucket_id=IMAGESVIDEOS_BUCKET_ID)
+bucketClient = Client(bucket_id=OBJECT_STORAGE_BUCKET_ID)
 
 pg_queue = PGQueue(max_workers=4) 
 object_storage_queue = ObjectStorageQueue(max_workers=4) # increase max_workers to parallelize uploads
@@ -50,8 +50,7 @@ attributes_list = [
     "epic_name",
     "timestamp_epic_name",
     "images",  # List of images
-    "videos",  # List of videos
-    "step_state",  # [image_proof, wait, video_proof] - Tracks user progress.
+    "step_state",  # [epic_name, wait, image_proof] - Tracks user progress.
     "points_assigned",
     "reacted_hand"
 ]
@@ -72,7 +71,6 @@ def initialize_key(discord_id):
         user_data = {attr: None for attr in attributes_list}
         user_data["discord_id"] = str(discord_id)
         user_data["images"] = []  # Initialize empty images list
-        user_data["videos"] = []  # Initialize empty videos list
         user_data["step_state"] = "epic_name"  # The user's next step is to enter their Epic Games name
         user_data["reacted_hand"] = False
         with open(file_path, "w", encoding="utf-8") as file:
@@ -110,49 +108,7 @@ async def download_image(media_url, image_name):
         return None
 
 
-async def download_video(streamable_url, video_name):
-    """Downloads a video from Streamable asynchronously and saves it locally."""
 
-    async def get_streamable_direct_url(streamable_url):
-        """Fetches the direct MP4 URL from a Streamable video link asynchronously."""
-        try:
-            video_id = streamable_url.split("/")[-1]  
-            api_url = f"https://api.streamable.com/videos/{video_id}"
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_url) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-
-                    if "files" in data and "mp4" in data["files"]:
-                        return data["files"]["mp4"]["url"]
-        except Exception as e:
-            logger.info(f"❌ Failed to fetch Streamable metadata: {e}")
-        return None
-
-    try:
-        direct_url = await get_streamable_direct_url(streamable_url)
-        if not direct_url:
-            return None  
-
-        file_path = os.path.join(DB_DIR, video_name)
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(direct_url) as response:
-                response.raise_for_status()
-
-                async with aiofiles.open(file_path, "wb") as video_file:
-                    async for chunk in response.content.iter_chunked(8192):
-                        await video_file.write(chunk)
-
-        # ✅ Queue upload instead of blocking
-        asyncio.create_task(object_storage_queue.add_task(async_upload_to_object_storage, file_path, video_name))
-
-        logger.info(f"✅ Video {video_name} saved locally and queued for object storage upload.")
-        return file_path
-    except Exception as e:
-        logger.info(f"❌ Failed to download video: {e}")
-        return None
 
 async def async_upload_to_object_storage(file_path, medium_name):
     """Asynchronously uploads a file to Replit Object Storage."""
@@ -249,28 +205,6 @@ async def save_image_to_database(discord_id, image_url):
     save_user_data(discord_id, user_data)  # Save back to file
     logger.info(f"✅ Saved image proof for user {discord_id}")
 
-# ✅ Save Video Proof
-async def save_video_to_database(discord_id, streamable_video_url):
-    """Saves the video data for a user."""
-    initialize_key(discord_id)  # Ensure user file exists
-    user_data = load_user_data(discord_id)  # Load current data
-
-    # Download video from Streamable's CDN
-    video_name = f"{discord_id}_{len(user_data['videos']) + 1}.mp4"
-    downloaded_video_path = await download_video(streamable_video_url, video_name)
-
-    # Add video data to the user's videos list
-    user_data["videos"].append({
-        "streamable_video_url": streamable_video_url, # This url redirects to streamble.com and there I can watch/download the video
-        "video_path": downloaded_video_path,
-        "timestamp_uploaded": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        "video_status": "pending"
-    })
-    user_data["step_state"] = "wait"  # The user should wait for a response
-
-    save_user_data(discord_id, user_data)  # Save back to file
-    logger.info(f"✅ Saved video proof for user {discord_id}")
-
 
 # --- END OF POST ---
 
@@ -306,7 +240,6 @@ async def create_table():
                 epic_name TEXT,
                 timestamp_epic_name TEXT,
                 images JSONB,
-                videos JSONB,
                 step_state TEXT,
                 points_assigned INTEGER DEFAULT 0,
                 reacted_hand BOOLEAN DEFAULT FALSE
@@ -327,14 +260,6 @@ async def restore_filesystem_from_db():
             except Exception as e:
                 logger.error(f"❌ Failed to restore image {image_name}: {e}")
 
-    async def download_video_from_bucket(video_name, file_path):
-        """Wrapper to download videos mit Rate-Limitierung."""
-        async with OBJECT_STORAGE_SEMAPHORE:
-            try:
-                await asyncio.to_thread(bucketClient.download_to_filename, video_name, file_path)
-                logger.info(f"✅ Restored pending video {video_name} from object storage to {file_path}")
-            except Exception as e:
-                logger.error(f"❌ Failed to restore video {video_name}: {e}")
 
     
     async with db_pool.acquire() as conn:
@@ -350,7 +275,6 @@ async def restore_filesystem_from_db():
                 "epic_name": row["epic_name"],
                 "timestamp_epic_name": row["timestamp_epic_name"],
                 "images": json.loads(row["images"]),
-                "videos": json.loads(row["videos"]),
                 "step_state": row["step_state"],
                 "points_assigned": row["points_assigned"],
                 "reacted_hand": row["reacted_hand"]
@@ -369,15 +293,6 @@ async def restore_filesystem_from_db():
                     if not os.path.exists(file_path):
                         tasks.append(download_image_from_bucket(image_name, file_path))
 
-            # ✅ Restore pending videos from Object Storage
-            for video in user_data["videos"]:
-                if video["video_status"] == "pending":
-                    video_name = os.path.basename(video["video_path"])
-                    file_path = os.path.join(DB_DIR, video_name)
-
-                    if not os.path.exists(file_path):
-                        tasks.append(download_video_from_bucket(video_name, file_path))
-
         # Run all downloads concurrently
         await asyncio.gather(*tasks)
 
@@ -392,7 +307,7 @@ async def save_user_data_to_pg(discord_id, data):
         async with PG_SEMAPHORE:
             async with db_pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO users (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, videos, step_state, points_assigned, reacted_hand)
+                    INSERT INTO users (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, step_state, points_assigned, reacted_hand)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     ON CONFLICT (discord_id) DO UPDATE SET
                         discord_name = EXCLUDED.discord_name,
@@ -400,7 +315,6 @@ async def save_user_data_to_pg(discord_id, data):
                         epic_name = EXCLUDED.epic_name,
                         timestamp_epic_name = EXCLUDED.timestamp_epic_name,
                         images = EXCLUDED.images,
-                        videos = EXCLUDED.videos,
                         step_state = EXCLUDED.step_state,
                         points_assigned = EXCLUDED.points_assigned,
                         reacted_hand = EXCLUDED.reacted_hand
@@ -411,7 +325,6 @@ async def save_user_data_to_pg(discord_id, data):
                     data["epic_name"],
                     data["timestamp_epic_name"],
                     json.dumps(data["images"]),
-                    json.dumps(data["videos"]),
                     data["step_state"],
                     data.get("points_assigned", 0),
                     data["reacted_hand"]
@@ -450,7 +363,6 @@ async def delete_users_table():
 if __name__ == "__main__":
 
     if len(sys.argv) > 2 and sys.argv[1] == "populate":
-        from config import sample_image_urls, sample_video_urls
         for i in range(1, int(sys.argv[2]) + 1):
             save_epic_name_to_database(i, f"discord_name_{i}", f"epic_name_{i}")
 
@@ -467,7 +379,7 @@ if __name__ == "__main__":
         os.makedirs(DB_DIR, exist_ok=True)  # reset the database
         # delete user entries in postgresql
         asyncio.run(delete_users_table())
-        # delete images/videos in object storage bucket
+        # delete images in object storage bucket
         for key in bucketClient.list():
             logger.info(key.name)
             bucketClient.delete(key.name)

@@ -33,7 +33,6 @@ else:  # development
     
 
 EPIC_OAUTH_URL = f"https://www.epicgames.com/id/authorize?client_id={EPIC_CLIENT_ID}&response_type=code&scope=basic_profile&redirect_uri={EPIC_REDIRECT_URI}"
-DISCORD_BOT_URL = "http://127.0.0.1:5001/notify"
 
 CATEGORY_ID = 1329571928482250835
 WELCOME_CHANNEL_ID = 1329571928951754823
@@ -42,15 +41,12 @@ GIVEAWAY_CHANNEL_ID = 1338535496581644420
 FAQ_CHANNEL_ID = 1338868370132435004
 TESTING_CHANNEL_ID = 1339342650444091423
 MERT_DISCORD_ID = 404403851505172532
+ContentCreator_name = "YourCreator"
 
 IMAGESVIDEOS_BUCKET_ID = os.getenv("IMAGESVIDEOS_BUCKET_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # links
-#randomImage1 = "https://cdn.discordapp.com/attachments/894683986868203551/1338922579213291560/ImageProofSampleBrowser.PNG?ex=67c09ed2&is=67bf4d52&hm=4215ee3088163e6109403a501e4a65e0882355da224c5dd6f83737043f27a1a7&"
-sampleImageProofsFinalMergedURL = "https://cdn.discordapp.com/attachments/894683986868203551/1338928042902421656/Screenshot_2025-02-11_174148.png?ex=67c49869&is=67c346e9&hm=7ac5d9ec1dc2290a24d1c58455675ddca78460dfbac58f102bd2cdb2fa600ebd&"
-sample_image_urls = [sampleImageProofsFinalMergedURL]
-
-sample_video_urls = ["https://streamable.com/zl2w7w",
-                     "https://streamable.com/24do7i"]
+creativeMapPlayerTimeURL = "https://cdn.discordapp.com/attachments/894683986868203551/1346532831920128063/edited_image_1.png?ex=67c887ec&is=67c7366c&hm=8fdaaea3bb9bfb858b33e23444a8789bb5b98e2c292a4a1d6f3e98c6bac51073&"
+sample_image_urls = [creativeMapPlayerTimeURL]
 
