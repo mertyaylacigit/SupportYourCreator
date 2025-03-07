@@ -17,7 +17,7 @@ from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL, C
 from db_handler import db_pool, DB_DIR, load_user_data, save_user_data, save_dm_link_to_database, save_epic_name_to_database, save_image_to_database, init_pg
 from queues import RateLimitQueue
 
-from flask import Flask, request
+from flask import Flask, request, render_template
 import threading
 
 
@@ -31,9 +31,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)  # ✅ Use logger instead of print()
 
-
-# app that handles /notify
-discord_app = Flask(__name__)
 
 
 
@@ -181,7 +178,7 @@ async def on_ready():
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
 
     if channel:
-        # UNCOMMENT THIS IF THE INTITAL MESSAGE GOT DELETED
+        # #UNCOMMENT THIS IF THE INTITAL MESSAGE GOT DELETED
         #embed = discord.Embed(
         #    title="✅ Willkommen zum Verifizierungs-System! ✅",
         #    description=f"Hier kannst du verifizieren, dass du {ContentCreator_name} supportest. \nDrücke auf **Verifizieren**, um zu beginnen!",
@@ -390,11 +387,7 @@ class Welcome2VerifyView(BaseView):
                               "verarbeiten und mit deinen Discord-Daten verknüpfen darf.")
             
 
-        class Verify2EnterIDView(BaseView):
-            def __init__(self, discord_id):
-                super().__init__(timeout=None)
-                self.add_item(discord.ui.Button(label="Mit Epic Games Account verknüpfen", style=discord.ButtonStyle.link, url=EPIC_OAUTH_URL+f"&state={discord_id}"))
-                
+        
         view = Verify2EnterIDView(user.id)
         
 
@@ -407,16 +400,20 @@ class Welcome2VerifyView(BaseView):
 
 
 
+class Verify2EnterIDView(BaseView):
+    def __init__(self, discord_id):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(label="Mit Epic Games Account verknüpfen", style=discord.ButtonStyle.link, url=EPIC_OAUTH_URL+f"&state={discord_id}"))
 
 
 
 
 
 ### ✅ RUN FLASK SERVER AS A BACKGROUND THREAD ###
-def run_discord_app():5001
+def run_discord_app():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    discord_app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)
+    discord_app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=False)
 
 
 # TESTS
@@ -446,12 +443,34 @@ async def stress_test_concurrent_users(frequency=10):
 
 
 
+
+
+
+#⚠️⚠️⚠️IMPORTANT⚠️⚠️⚠️
+# I cannot deploy 2 apps on the same domain, the latter overwrite the first, so also provide the frontend part of 
+# the replit app "static SYC website 24/7". Dont forget to redeploy the frontend replit app after shutting down this replit app
+
+# app that handles /notify
+discord_app = Flask(__name__)
+
+@discord_app.route("/")
+def index():
+    return render_template("index.html")
+
+@discord_app.route("/impressum")
+def impressum():
+    return render_template("impressum.html")
+
+@discord_app.route("/privacy-policy")
+def privacy_policy():
+    return render_template("privacy-policy.html")
+
+@discord_app.route("/privacy-policy.html")
+def privacy_policyEpic():
+    return render_template("privacy-policy.html")
+
+
 # EPIC GAMES AUTHENTICATION
-
-
-
-
-discord_user_epic = {}
 
 @discord_app.route('/epic_auth')  # BUG: changed reviewerapp to discord app, so maybe port conflict
 def epic_callback():
@@ -493,6 +512,7 @@ def epic_callback():
                 }) as user_resp:
                     user_data = await user_resp.json()
                     #logger.info(user_data)
+                    # BUG: if user cancels Auth, there is no key "preferred_username" but "error":"cancelled"
                     logger.debug(f"✅ Linked {discord_id} to {user_data['preferred_username']}")
 
                     
