@@ -7,13 +7,9 @@ hidden = [".pythonlibs"]
 channel = "stable-23_05"
 
 [deployment]
-run = ["sh", "-c", "export ENVIRONMENT=deployment ; python main.py"]
-deploymentTarget = "cloudrun"
+run = ["sh", "-c", "export ENVIRONMENT=production ; python main.py"]
+deploymentTarget = "gce"
 build = ["sh", "-c", "pip install -r requirements.txt"]
-
-[[ports]]
-localPort = 5001
-externalPort = 3000
 
 [[ports]]
 localPort = 8080
@@ -23,4 +19,4 @@ externalPort = 80
 runButton = "run main in development environment"
 
 [objectStorage]
-defaultBucketID = "replit-objstore-40d5e5aa-74f2-48ef-aabc-8a967200100e"
+defaultBucketID = "replit-objstore-5e9f8ccd-6c56-4a1f-9a11-9fc7cf44ce73"

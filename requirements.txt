@@ -33,3 +33,9 @@ replit-object-storage
 gunicorn
 gunicorn
 aiofiles
+opencv-python 
+pytesseract
+matplotlib
+psutil
+fuzzywuzzy
+numpy

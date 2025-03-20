@@ -11,13 +11,14 @@ import aiohttp
 from datetime import datetime
 from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
-from config import TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, CATEGORY_ID, GUILD_ID, FAQ_CHANNEL_ID, MERT_DISCORD_ID, TESTING_CHANNEL_ID
-from config import EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
+from config import TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
+from config import send_inital_messages
 from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL, ContentCreator_name
-from db_handler import db_pool, DB_DIR, load_user_data, save_user_data, save_dm_link_to_database, save_epic_name_to_database, save_image_to_database, init_pg
-from queues import RateLimitQueue
+from db_handler import db_pool, DB_DIR, load_user_data, restore_user_from_db, save_dm_link_to_database, save_epic_name_to_database, save_image_proof_decision, init_pg
+from queues import RateLimitQueue, CpuIntensiveQueue
+from ai import check_image
 
-from flask import Flask, request, render_template
+from flask import Flask, request, redirect
 import threading
 
 
@@ -44,119 +45,90 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 rate_limiter = RateLimitQueue(50)
 logger.info("✅ created RateLimitQueue(50) succesfully!")
 
+cpu_limiter = CpuIntensiveQueue(max_workers=1)
+logger.info("✅ created CpuIntensiveQueue() succesfully!")
+
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
+
     if isinstance(message.channel, discord.DMChannel):
-        
         user_data = load_user_data(message.author.id)
         if user_data is None:
             await rate_limiter.add_request(message.channel.send, (), 
-                {"content":f"❌ Verifiziere zuerst deinen Epic Games Namen {message.author.mention}!\n"
-                            "Schreibe solange hier bitte nichts, damit der unser Verlauf clean bleibt (:"})
+                {"content":f"❌ Please verify your Epic Games name first {message.author.mention}!\n"})
             return
-        if user_data["step_state"] == "wait":
-            await rate_limiter.add_request(message.channel.send, (), 
-                {"content":f"❌ Dein Beweis wird gerade geprüft {message.author.mention}.\n Wir melden uns bei dir, " 
-                    "wenn wir fertig sind.\n Schreibe solange hier bitte nichts, damit der Verlauf clean bleibt (:"})
-            return
-        
-        # Check if the message has an attachment (image)
+
         if message.attachments:
             allowed_file_types = ["image"]
 
-            # Check if the attachment is an image
-            attachment = message.attachments[0]  # User should only send one image so ignore all others
+            attachment = message.attachments[0]  # Nur das erste Bild verarbeiten
             for file_type in allowed_file_types:
                 if file_type in attachment.content_type:
-                    if file_type == "image":
-                        if user_data["step_state"] == "image_proof":
-                            #logger.info(f" It is a {attachment.content_type} file.")
-                            image_url = attachment.url
-                            await save_image_to_database(message.author.id, image_url)
-                             #✅ Send confirmation message
+                    if file_type == "image" and user_data["step_state"] == "image_proof":
+                        image_url = attachment.url
+
+                        # ✅ Defer-Wait-Nachricht senden
+                        await rate_limiter.add_request(message.channel.send, (), 
+                            {"content": "⏳ Your proof is being reviewed, please wait a moment..."})
+
+                        # ✅ Bildprüfung mit cpu_limiter (asynchron)
+                        decision_future = await cpu_limiter.add_task(check_image, image_url)
+                        decision = await decision_future  # ✅ Await the Future to get the actual dictionary result
+                        
+                        # ✅ Entscheidung speichern
+                        await save_image_proof_decision(message.author.id, image_url, decision)
+
+                        if "error" in decision:
                             embed = discord.Embed(
-                                description="⏳ **Wir werden dein Beweisbild prüfen und uns eigenständig bei dir melden.**\n\n"
-                                            "✅ **Du musst nichts mehr machen!**",
-                                color=discord.Color.green()
-                            )
-                            embed.set_footer(text="Danke für deine Geduld! ❤️")
-                            await rate_limiter.add_request(message.channel.send, (), 
-                                {"embed": embed})
+                                    description="❌ **Your proof has been rejected!**\n\n"
+                                                f"Reason: An error occurred: {decision['error']}\n"
+                                                "Please send a clear image of the message displayed in the Creative Map.",
+                                    color=discord.Color.red()
+                                )
+                            await rate_limiter.add_request(message.channel.send, (), {"embed": embed})
                             return
                         else:
-                            await rate_limiter.add_request(message.channel.send, (), 
-                                {"content":f"❌ {message.author.mention} Du sollst gerade kein Bild hochladen!"})
+                            # ✅ Antwort an den Benutzer basierend auf der Entscheidung
+                            if decision["valid_hash"]:
+                                giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
+                                if user_data["points_assigned"] is None: # inital points_assigned = None so only change permission the first time
+                                    await rate_limiter.add_request(giveaway_channel.set_permissions, (message.author,), {"read_messages": True})
+                                
+                                embed = discord.Embed(
+                                    description="**✅ Your proof has been accepted!**\n\n"
+                                                f"Total playtime: {decision['played_time']} minutes\n"
+                                                f"Your winning chance is: {1 + decision['played_time'] / 60}x\n\n"
+                                                f"Checkout the giveaway channel: {giveaway_channel.mention}",
+                                    color=discord.Color.green()
+                                )
+                                embed.set_footer(text="Thank you for your support! ❤️")
+                            else:
+                                embed = discord.Embed(
+                                    description="❌ **Your proof has been rejected!**\n\n"
+                                                "Reason: Your playtime does not match the hash value.\n"
+                                                "Please send a clear image of the message displayed in the Creative Map.",
+                                    color=discord.Color.red()
+                                )
+
+                            await rate_limiter.add_request(message.channel.send, (), {"embed": embed})
                             return
-             
-        #await rate_limiter.add_request(message.channel.send, (), 
-        #    {"content":f"❌ {message.author.mention} schreibe hier bitte nichts, damit der Verlauf clean bleibt (:"})
+                        
 
-
-@bot.event
-async def on_raw_reaction_add(payload):
-    """Triggered when a user reacts to the giveaway message for the first time."""
-
-    # Check if the reaction is in the giveaway channel
-    if payload.channel_id != GIVEAWAY_CHANNEL_ID:
-        return  # Ignore reactions in other channels
-
-    # Fetch the giveaway message (if needed)
-    giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
-    with open("giveaway.json", "r") as f:
-        giveaway_data = json.load(f)
-        # caching the giveaway message inside the bot to avoid fetching it multiple times with Discord API
-        if not hasattr(bot, "giveaway_message"):
-            if giveaway_channel:
-                bot.giveaway_message = await rate_limiter.add_request(giveaway_channel.fetch_message, (giveaway_data["message_id"],), {})
-                giveaway_message = bot.giveaway_message
-                logger.info("✅ Cached giveaway message.")
-        else:
-            giveaway_message = bot.giveaway_message
-
-
-    # Check if the reaction is the correct one (✋) and is on the giveaway message
-    if str(payload.emoji) == "✋" and giveaway_message.id == payload.message_id:
-        # search user inside bots cache before fetchign from API
-        user = bot.get_user(payload.user_id)
-        if user is None:
-            logger.error("❌ User not found.")
-            user = await rate_limiter.add_request(bot.fetch_user, (payload.user_id,), {})
-        logger.debug(f"User found: {user}")
-
-        if user and not user.bot:  # Ignore bot reactions
-            # Load user data
-            user_data = load_user_data(user.id)
-            if user_data is None:
-                logger.debug(f"User {user.id} not found in the database.")
-                return
-            # Check if the user has already reacted before
-            if user_data.get("reacted_hand", False):
-                logger.debug(f"User has already reacted.{user_data['reacted_hand'], user_data['discord_id']}")
-                return  # User already reacted, do nothing
-
-            # ✅ Update user data to mark them as reacted
-            user_data["reacted_hand"] = True
-            save_user_data(user.id, user_data)  # Save back to the database
-            logger.debug(f"✅ {user.name} has reacted to the giveaway message.")
-
-        else:
-            logger.error(f"❌ User {user.id} not found.")
-
+                    else:
+                        await rate_limiter.add_request(message.channel.send, (), 
+                            {"content": f"❌ Please verify your Epic Games name first {message.author.mention}!\n"})
+                        return
 
 
 
 @bot.event
 async def on_ready():
     logger.info(f"✅ Logged in as {bot.user}")
-    #logger.info("🔍 Registered Slash Commands:")
-    #logger.info(await bot.tree.fetch_commands())
-    #await bot.tree.sync()
-    #logger.info(await bot.tree.fetch_commands())
 
-    await asyncio.sleep(1)  # ✅ Small delay before connecting to DB
+    await asyncio.sleep(0.1)  # ✅ Small delay before connecting to DB
     logger.info(f"✅✅✅ `db_pool` before init_pg(): {db_pool}")
     await init_pg()
     logger.info(f"✅✅✅ `db_pool` after init_pg(): {db_pool}")
@@ -164,6 +136,16 @@ async def on_ready():
 
     asyncio.create_task(rate_limiter.worker())
     logger.info("✅ Started worker of RateLimitQueue(50) succesfully!")
+
+    await cpu_limiter.start_workers()
+    logger.info("✅ Started worker of CpuIntensiveQueue(1) succesfully!")
+
+
+    
+    
+    logger.info("begin Testing ✅✅✅✅✅")
+    #await bot.tree.sync()
+    logger.info("end Testing ✅✅✅✅✅")
 
 
     
@@ -178,44 +160,41 @@ async def on_ready():
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
 
     if channel:
-        # #UNCOMMENT THIS IF THE INTITAL MESSAGE GOT DELETED
-        #embed = discord.Embed(
-        #    title="✅ Willkommen zum Verifizierungs-System! ✅",
-        #    description=f"Hier kannst du verifizieren, dass du {ContentCreator_name} supportest. \nDrücke auf **Verifizieren**, um zu beginnen!",
-        #    color=discord.Color.blue()
-        #)
-        #view = Welcome2VerifyView()
-        #await channel.send(embed=embed, view=view)
-        pass
+        if send_inital_messages:
+            #UNCOMMENT THIS IF THE INTITAL MESSAGE GOT DELETED
+            embed = discord.Embed(
+                title="✅ Welcome to Play2Earn1v1's Verification System! ✅",
+                description="Here you can submit your proofs. \nClick on **Verify** to get started!",
+                color=discord.Color.blue()
+            )
+            view = Welcome2VerifyView()
+            await channel.send(embed=embed, view=view)
 
     giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
 
     if giveaway_channel:
         
         embed = discord.Embed(
-            title=f"🎉 Willkommen zu {ContentCreator_name}'s Giveaway🎁!",
+            title="🎁 Giveaway 🎁!",
             description=(
-                "✅ Drücke auf die Hand ✋ unten, um **teilzunehmen**!\n\n"
-                "Durch TODO:CREATIVE MAP PLAYER TIME hast du eine **__1x Gewinnchance__**!\n\n"
+                "\n Click on the ✋ below to **participate**!\n\n"
             ),
             color=discord.Color.gold()
         )
-        embed.set_footer(text="Danke für deinen Support! ❤️")
+        embed.set_footer(text="Thank you for your support! ❤️")
 
-        # UNCOMMENT IF GIVEAWAY MESSAGE GOT DELETED       # BUG: IF UNCOMMENCTING, THEN UPDATE THE MESSAGE ID IN THE GIVEAWAY.JSON FILE !!!
-        #giveaway_message = await giveaway_channel.send(embed=embed)
-        #await giveaway_message.add_reaction("✋")
-        #logger.info("✅⚠️ Embed sent to Giveaway channel.")
+        if send_inital_messages:
+            # UNCOMMENT IF GIVEAWAY MESSAGE GOT DELETED   
+            giveaway_message = await giveaway_channel.send(embed=embed)
+            await giveaway_message.add_reaction("✋")
+            logger.info("✅⚠️ Embed sent to Giveaway channel.")
 
-        # Store the message ID in a file  # TODO: find a better solution for that
-        
-        #with open("giveaway.json", "w") as f:
-        #    json.dump({"message_id": giveaway_message.id}, f)
-        logger.info("✅Bot is ready!")
+    logger.info("✅Bot is ready!")
+
 
 
 @bot.tree.command(name="gewinnspiel", description="anzahl_gewinner Gewinner aller Supporter auslosen")
-async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
+async def giveaway(interaction: discord.Interaction, message_id:str,  anzahl_gewinner: int):
     """Draw NUMBER winners from the giveaway participants."""
     if interaction.channel_id != GIVEAWAY_CHANNEL_ID:
         logger.info(f"❌ Command not allowed in channel: {interaction.channel_id}")
@@ -226,9 +205,8 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
         logger.info(f"❌ Giveaway channel not found: {GIVEAWAY_CHANNEL_ID}")
         return
 
-    with open("giveaway.json", "r") as f:
-        giveaway_data = json.load(f)
-        giveaway_message = await rate_limiter.add_request(giveaway_channel.fetch_message, (giveaway_data["message_id"],), {})
+    
+    giveaway_message = await rate_limiter.add_request(giveaway_channel.fetch_message, (int(message_id),), {})
 
     # Gather participants
     participants = []
@@ -253,6 +231,7 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
         for reaction in giveaway_message.reactions:    # FOR USERS THAT HAVE REACTED/ ACCESS TO GIVEAWAY
             
             async for user in reaction.users():
+                print(user.name)
                 if user.bot:  # Skip the bot itself
                     continue
     
@@ -266,7 +245,7 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
 
     if len(participants) < anzahl_gewinner:
         await rate_limiter.add_request(interaction.response.send_message, (), 
-            {"content":"❌ Nicht genügend Teilnehmer, um die angegebene Anzahl von Gewinnern zu wählen.",
+            {"content":"❌ Not enough participants to select the specified number of winners.",
             "ephemeral":True})
         return
 
@@ -280,16 +259,16 @@ async def giveaway(interaction: discord.Interaction, anzahl_gewinner: int):
         winner_mentions = [winner.mention for winner in winners]
     embed = discord.Embed(
         title="🎉 Gewinner des Giveaways!",
-        description=("Herzlichen Glückwunsch an die folgenden Gewinner:\n\n" +
-                     "\n".join(f"{place+1}. {mention} 🥳" for place, mention in enumerate(winner_mentions)) +
-                     "\n\n" +
-                     "Gewinnchancen aller Supporter: \n"  +
-                     "\n".join(f"@{user.name}: **{chance}x** Gewinnchance" for user, chance in zip(participants, user_weights))
+        description=("Congratulations to the following winners:\n\n" +
+                    "\n".join(f"{place+1}. {mention} 🥳" for place, mention in enumerate(winner_mentions)) +
+                    "\n\n" +
+                    "Winning chances for all supporters: \n"  +
+                    "\n".join(f"@{user.name}: **{chance}x** winning chance" for user, chance in zip(participants, user_weights))
                     ),
         
         color=discord.Color.gold()
     )
-    embed.set_footer(text="Danke für deinen Support! ❤️")
+    embed.set_footer(text="Thank you for your support! ❤️")
 
     await rate_limiter.add_request(interaction.response.send_message, (), 
         {"embed": embed})
@@ -337,11 +316,32 @@ async def stresstest(interaction: discord.Interaction, frequency: int):
     await interaction.followup.send(f"✅ Stress test completed with frequency {frequency}")
     logger.info(f"✅⚠️Stress test started with frequency {frequency}")
 
+@bot.tree.command(name="stresstest_cpuqueue")
+async def stresstest_cpuqueue(interaction: discord.Interaction, max_workers: int):
+    """Starts a stress test with the specified frequency (in seconds)."""
+    # Defer response to prevent expiration
+    await interaction.response.defer(thinking=True)
+    await test_cpu_queue(max_workers)
+
+    # ✅ Send the final response
+    await interaction.followup.send(f"✅ CPU QUEUE Stress test completed ")
+
 @bot.tree.command(name="sync2")
 async def sync2(interaction: discord.Interaction):
     await bot.tree.sync()
     await interaction.response.send_message(f"✅ Slash commands synced2! commands: {await bot.tree.fetch_commands()}")
     logger.info("✅⚠️ Slash commands synced2! commands")
+
+
+@bot.tree.command(name="restore_user")
+async def restore_user(interaction: discord.Interaction, user: discord.Member):
+    """Restores a specific user's data from PostgreSQL to the local cache."""
+    user_data = await restore_user_from_db(user.id)
+
+    if user_data:
+        await interaction.response.send_message(f"✅ {user.mention} restored from database to local cache!")
+    else:
+        await interaction.response.send_message(f"❌ No data found for {user.mention}.")
     
 
 
@@ -363,28 +363,29 @@ class Welcome2VerifyView(BaseView):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Verifizieren", style=discord.ButtonStyle.green, custom_id="verify_button")
+    @discord.ui.button(label="Verify", style=discord.ButtonStyle.green, custom_id="verify_button")
     async def verify(self, interaction: discord.Interaction, button: Button):
         guild = interaction.guild
         user = interaction.user
 
         user_data = load_user_data(user.id)
         if user_data:
-            dm_link = user_data["dm_link"]
-            await rate_limiter.add_request(interaction.response.send_message, (), 
-                {"content":f"❌ {user.mention} Ich habe dir bereits eine DM geschickt! ➡️ **[Gehe zu deinen DMs🔗]({dm_link})**",
-                 "ephemeral":True})
-            return
+            if user_data["discord_name"]:
+                dm_link = user_data["dm_link"]
+                await rate_limiter.add_request(interaction.response.send_message, (), 
+                    {"content":f"❌ {user.mention} I have already sent you a DM! ➡️ **[Go to your DMs🔗]({dm_link})**",
+                      "ephemeral":True})
+                return
             
         embed = discord.Embed(
-            title="Mit Epic Games Account verknüpfen",
-            description=("Klicke auf den Button unten, um dein Epic Games Account mit deinem Discord-Account " 
-                        "für den Discord-Bot SupportYourCreator zu verknüpfen und somit deine Identität zu bestätigen.\n "
-                        "**Der SupportYourCreator-Bot erhält KEINEN Zugriff auf deine Account-Daten oder dein Passwort!**"),
+            title="Link your Epic Games Account",
+            description=("Click the button below to link your Epic Games account with your Discord account "
+                        "for the SupportYourCreator bot to verify your identity.\n "
+                        "**The SupportYourCreator bot does NOT get access to your account data or password!**"),
             color=discord.Color.blue()
         )
-        embed.set_footer(text="Mit deiner Anmeldung stimmst du zu, dass der Bot den Benutzernamen deines Epic Games Accounts "
-                              "verarbeiten und mit deinen Discord-Daten verknüpfen darf.")
+        embed.set_footer(text="By linking your account, you agree that the bot may process your Epic Games username "
+                              "and link it to your Discord account.")
             
 
         
@@ -393,9 +394,9 @@ class Welcome2VerifyView(BaseView):
 
         dm_message = await rate_limiter.add_request(user.send, (), {"view": view, "embed": embed})
         dm_link = dm_message.jump_url
-        save_dm_link_to_database(user.id, dm_link)
+        save_dm_link_to_database(user.id, user.name, dm_link)
         await rate_limiter.add_request(interaction.response.send_message, (), 
-            {"content":f"✅ {user.mention} Ich habe dir eine DM geschickt! ➡️ **[Gehe zu deinen DMs🔗]({dm_link}) **",
+            {"content":f"✅ {user.mention} I have sent you a DM! ➡️ **[Go to your DMs🔗]({dm_link}) **",
              "ephemeral":True})
 
 
@@ -403,7 +404,7 @@ class Welcome2VerifyView(BaseView):
 class Verify2EnterIDView(BaseView):
     def __init__(self, discord_id):
         super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(label="Mit Epic Games Account verknüpfen", style=discord.ButtonStyle.link, url=EPIC_OAUTH_URL+f"&state={discord_id}"))
+        self.add_item(discord.ui.Button(label="Link Epic Games Account", style=discord.ButtonStyle.link, url=EPIC_OAUTH_URL+f"&state={discord_id}"))
 
 
 
@@ -423,7 +424,7 @@ async def simulate_user_traffic(i):
     
     save_epic_name_to_database(i, f"discord_name_{i}", f"epic_name_{i}")
     await asyncio.sleep(0.1)
-    await save_image_to_database(i, sample_image_urls[i % len(sample_image_urls)])
+    #await save_image_to_database(i, sample_image_urls[i % len(sample_image_urls)])
     await asyncio.sleep(0.1)
     
 
@@ -439,40 +440,43 @@ async def stress_test_concurrent_users(frequency=10):
     end_time = time.time()  # End time
     logger.info(f"✅ Completed {frequency} tasks in {end_time - start_time:.2f} seconds!")
 
+async def test_cpu_queue(max_workers=1):
+
+    cpu_limiterTEST = CpuIntensiveQueue(max_workers=max_workers)
+    logger.info("✅ created CpuIntensiveQueue() succesfully!")
+    await cpu_limiterTEST.start_workers()
+    logger.info("✅ Started worker of CpuIntensiveQueue() succesfully!")
+    
+    testing_starttime = time.time()
+
+    image_tasks = [
+        cpu_limiterTEST.add_task(check_image, i) for i in range(1,8) for j in range(4)
+    ]
+    results = await asyncio.gather(*image_tasks)  # Wait for all tasks to finish
+
+    # Print results
+    for res in results:
+        print(res)
+
+
+
+    testing_endtime = time.time()
+    logger.info(f"⏰Testing Time: {testing_endtime - testing_starttime}")
+
 # --- END OF TESTS ---
 
 
 
 
 
-
-#⚠️⚠️⚠️IMPORTANT⚠️⚠️⚠️
-# I cannot deploy 2 apps on the same domain, the latter overwrite the first, so also provide the frontend part of 
-# the replit app "static SYC website 24/7". Dont forget to redeploy the frontend replit app after shutting down this replit app
-
-# app that handles /notify
+# app that handles /epic_auth
 discord_app = Flask(__name__)
 
-@discord_app.route("/")
-def index():
-    return render_template("index.html")
-
-@discord_app.route("/impressum")
-def impressum():
-    return render_template("impressum.html")
-
-@discord_app.route("/privacy-policy")
-def privacy_policy():
-    return render_template("privacy-policy.html")
-
-@discord_app.route("/privacy-policy.html")
-def privacy_policyEpic():
-    return render_template("privacy-policy.html")
 
 
 # EPIC GAMES AUTHENTICATION
 
-@discord_app.route('/epic_auth')  # BUG: changed reviewerapp to discord app, so maybe port conflict
+@discord_app.route('/epic_auth') 
 def epic_callback():
     code = request.args.get('code')
     discord_id = request.args.get('state')
@@ -516,30 +520,30 @@ def epic_callback():
                     logger.debug(f"✅ Linked {discord_id} to {user_data['preferred_username']}")
 
                     
-                    db_resp = save_epic_name_to_database(user.id, user.name, user_data['preferred_username'])
+                    db_resp = save_epic_name_to_database(user.id, user_data['preferred_username'])
                     
                     # next step: image_proof
                     embed = discord.Embed(
-                        title="✅ Danke! Dein Epic Games Name wurde bestätigt und gespeichert.\n"
-                              "**Creative Map Spielerzeit hochladen**",
+                        title="✅ Thank you! Your Epic Games name has been verified and saved.\n"
+                              "**Upload Creative Map playtime proof**",
                         description=(
-                            "Bitte lade ein **Beweisbild** hoch, das zeigt, #TODO: view for creative map time played"
+                            "Please upload a **proof image** that looks like the image below. \n"
+                            "You find this message inside the Play2Earn1v1 Map by pressing the UPLOAD button. \n"
+                            "Take a screenshot or a clear image with your smartphone of that message and send it here!"
                         ),
                         color=discord.Color.blue()
                     )
                     logger.debug(f"✅⚠️ Epic Games Name saved: {user.id}. And Embed sent")
                     embed.set_image(url=creativeMapPlayerTimeURL)
-                    embed.set_footer(text="Vielen Dank für deinen Support! ❤️")
+                    embed.set_footer(text="Thank you for your support! ❤️")
                     await rate_limiter.add_request(user.send, (), 
                         {"embed": embed})
                 return db_resp
 
     future = asyncio.run_coroutine_threadsafe(exchange_code(), bot.loop)
     result = future.result()
-    if result:   
-        return "✅ Epic Games Verifizierung erfolgreich. Du kannst jetzt wieder zurück zu Discord! ✅"
-    else:
-        return "❌ Du hast die Epic Games Verifizierung schon abgeschlossen. Du kannst jetzt wieder zurück zu Discord! ❌"
+
+    return redirect("https://supportyourcreator.com/success.html")  # Redirect to Discord or another link
     
 # --- END OF EPIC GAMES AUTHENTICATION ---
 
@@ -552,7 +556,7 @@ if __name__ == "__main__":
         logger.info(f"🗑️ Deleted directory: {DB_DIR}")
     else:
         logger.info(f"❌ Directory does not exist: {DB_DIR}")
-    time.sleep(1)
+    time.sleep(0.1)
     os.makedirs(DB_DIR, exist_ok=True)  # reset the database
 
 

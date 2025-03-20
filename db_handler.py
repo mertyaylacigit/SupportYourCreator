@@ -10,7 +10,7 @@ import aiohttp
 import aiofiles
 from datetime import datetime
 from replit.object_storage import Client
-from config import OBJECT_STORAGE_BUCKET_ID, DATABASE_URL, LOGGING_LEVEL
+from config import OBJECT_STORAGE_BUCKET_ID, DATABASE_URL, LOGGING_LEVEL, DB_TABLE
 from queues import PGQueue, ObjectStorageQueue
 
 
@@ -50,9 +50,8 @@ attributes_list = [
     "epic_name",
     "timestamp_epic_name",
     "images",  # List of images
-    "step_state",  # [epic_name, wait, image_proof] - Tracks user progress.
-    "points_assigned",
-    "reacted_hand"
+    "step_state",  # [epic_name, image_proof] - Tracks user progress.
+    "points_assigned"
 ]
 
 # GET
@@ -72,7 +71,6 @@ def initialize_key(discord_id):
         user_data["discord_id"] = str(discord_id)
         user_data["images"] = []  # Initialize empty images list
         user_data["step_state"] = "epic_name"  # The user's next step is to enter their Epic Games name
-        user_data["reacted_hand"] = False
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(user_data, file, indent=4)
 
@@ -153,25 +151,25 @@ def save_user_data(discord_id, data, only_local=False, loop=None):
 
 
 # ✅ Save DM link
-def save_dm_link_to_database(discord_id, dm_link):
+def save_dm_link_to_database(discord_id, discord_name, dm_link):
     """Saves the Epic Games ID for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
 
+    user_data["discord_name"] = str(discord_name)
     user_data["dm_link"] = dm_link 
 
     save_user_data(discord_id, user_data)  # Save back to file
     logger.info(f"✅ Saved Epic Games ID for user {discord_id}")
 
 # ✅ Save Epic Games ID
-def save_epic_name_to_database(discord_id, discord_name, epic_name):
+def save_epic_name_to_database(discord_id, epic_name):
     """Saves the Epic Games ID for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
 
     if (user_data["epic_name"] is None):
         user_data["epic_name"] = str(epic_name)
-        user_data["discord_name"] = str(discord_name)
         user_data["timestamp_epic_name"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         user_data["step_state"] = "image_proof"  # The user's next step is to upload image proof
         
@@ -184,7 +182,7 @@ def save_epic_name_to_database(discord_id, discord_name, epic_name):
     return True
 
 # ✅ Save Image Proof
-async def save_image_to_database(discord_id, image_url):
+async def save_image_proof_decision(discord_id, image_url, decision):
     """Saves the image data for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
@@ -198,12 +196,24 @@ async def save_image_to_database(discord_id, image_url):
         "image_url_cdn": image_url,
         "image_path": downloaded_image_path,
         "timestamp_uploaded": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        "image_status": "pending"
+        "image_status": "approved" if "valid_hash" in decision and decision["valid_hash"] else "denied",
+        "played_time": decision.get("played_time", 0),
+        "error" : decision["error"] if "error" in decision else ""
     })
-    user_data["step_state"] = "wait"  # The user should wait for a response
 
+    if "error" in decision:
+        pass
+    elif "valid_hash" in decision and "played_time" in decision:
+        # ✅ Update user progress state
+        if decision["valid_hash"]:
+            user_data["points_assigned"] = decision["played_time"]  # Grant points based on playtime
+        
+        user_data["step_state"] = "image_proof"
+    
     save_user_data(discord_id, user_data)  # Save back to file
     logger.info(f"✅ Saved image proof for user {discord_id}")
+
+    
 
 
 # --- END OF POST ---
@@ -230,10 +240,10 @@ async def init_pg():
     logger.info("✅ PostgreSQL initialized successfully.")
 
 async def create_table():
-    """Ensures that the users table exists."""
+    """Ensures that the {DB_TABLE} table exists."""
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE} (
                 discord_id TEXT PRIMARY KEY,
                 discord_name TEXT,
                 dm_link TEXT,
@@ -241,31 +251,15 @@ async def create_table():
                 timestamp_epic_name TEXT,
                 images JSONB,
                 step_state TEXT,
-                points_assigned INTEGER DEFAULT 0,
-                reacted_hand BOOLEAN DEFAULT FALSE
+                points_assigned INTEGER DEFAULT 0
             )
         """)
     logger.info("✅ Database table ensured.")
 
 async def restore_filesystem_from_db():
     """Restores the local filesystem from PostgreSQL on bot startup, including pending images."""
-    # Begrenze gleichzeitige Downloads auf 8, um den Pool von 10 nicht zu überlasten
-
-    async def download_image_from_bucket(image_name, file_path):
-        """Wrapper to download images mit Rate-Limitierung."""
-        async with OBJECT_STORAGE_SEMAPHORE:  # Begrenze gleichzeitige Downloads
-            try:
-                await asyncio.to_thread(bucketClient.download_to_filename, image_name, file_path)
-                logger.info(f"✅ Restored pending image {image_name} from object storage to {file_path}")
-            except Exception as e:
-                logger.error(f"❌ Failed to restore image {image_name}: {e}")
-
-
-    
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM users")
-
-        tasks = []  # Store tasks for concurrent execution
+        rows = await conn.fetch(f"SELECT * FROM {DB_TABLE}")
 
         for row in rows:
             user_data = {
@@ -276,27 +270,41 @@ async def restore_filesystem_from_db():
                 "timestamp_epic_name": row["timestamp_epic_name"],
                 "images": json.loads(row["images"]),
                 "step_state": row["step_state"],
-                "points_assigned": row["points_assigned"],
-                "reacted_hand": row["reacted_hand"]
+                "points_assigned": row["points_assigned"]
             }
 
             # ✅ Save user data in the filesystem
             save_user_data(user_data["discord_id"], user_data, only_local=True)
             logger.info(f"✅ Restored user {row['discord_id']} from PostgreSQL to filesystem")
 
-            # ✅ Restore pending images from Object Storage
-            for image in user_data["images"]:
-                if image["image_status"] == "pending":
-                    image_name = os.path.basename(image["image_path"])
-                    file_path = os.path.join(DB_DIR, image_name)
 
-                    if not os.path.exists(file_path):
-                        tasks.append(download_image_from_bucket(image_name, file_path))
 
-        # Run all downloads concurrently
-        await asyncio.gather(*tasks)
+async def restore_user_from_db(discord_id: int):
+    """Fetches and restores a specific user's data from PostgreSQL to the local cache."""
+    # This function is called by the discord slash command /restore_user
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(f"SELECT * FROM {DB_TABLE} WHERE discord_id = $1", str(discord_id))
 
-    
+        if not row:
+            logger.warning(f"❌ No data found for user {discord_id}.")
+            return None  # Return None if user is not found
+
+        user_data = {
+            "discord_id": row["discord_id"],
+            "discord_name": row["discord_name"],
+            "dm_link": row["dm_link"],
+            "epic_name": row["epic_name"],
+            "timestamp_epic_name": row["timestamp_epic_name"],
+            "images": json.loads(row["images"]),
+            "step_state": row["step_state"],
+            "points_assigned": row["points_assigned"]
+        }
+
+        # ✅ Save user data in the filesystem
+        save_user_data(user_data["discord_id"], user_data, only_local=True)
+
+        logger.info(f"✅ Restored user {row['discord_id']} from PostgreSQL to filesystem")
+        return user_data  # Return data if successful
 
 
 
@@ -306,9 +314,9 @@ async def save_user_data_to_pg(discord_id, data):
     try:
         async with PG_SEMAPHORE:
             async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO users (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, step_state, points_assigned, reacted_hand)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                await conn.execute(f"""
+                    INSERT INTO {DB_TABLE} (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, step_state, points_assigned)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ON CONFLICT (discord_id) DO UPDATE SET
                         discord_name = EXCLUDED.discord_name,
                         dm_link = EXCLUDED.dm_link,
@@ -316,8 +324,7 @@ async def save_user_data_to_pg(discord_id, data):
                         timestamp_epic_name = EXCLUDED.timestamp_epic_name,
                         images = EXCLUDED.images,
                         step_state = EXCLUDED.step_state,
-                        points_assigned = EXCLUDED.points_assigned,
-                        reacted_hand = EXCLUDED.reacted_hand
+                        points_assigned = EXCLUDED.points_assigned
                 """, 
                     str(discord_id),
                     data["discord_name"],
@@ -326,8 +333,7 @@ async def save_user_data_to_pg(discord_id, data):
                     data["timestamp_epic_name"],
                     json.dumps(data["images"]),
                     data["step_state"],
-                    data.get("points_assigned", 0),
-                    data["reacted_hand"]
+                    data.get("points_assigned", 0)
                 )
     
                 logger.debug(f"save_user_data_to_pg() executed for user {discord_id}")
@@ -337,7 +343,7 @@ async def save_user_data_to_pg(discord_id, data):
 
 
 async def delete_users_table():
-    """Deletes all data from the 'users' table in PostgreSQL."""
+    """Deletes all data from the {DB_TABLE} table in PostgreSQL."""
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         logger.info("❌ DATABASE_URL not found!")
@@ -346,8 +352,11 @@ async def delete_users_table():
     conn = await asyncpg.connect(db_url)
 
     try:
-        await conn.execute("TRUNCATE TABLE users CASCADE;")  # Delete all data in 'users' table
-        logger.info("🗑 Cleared all data in 'users' table.")
+        if DB_TABLE == "dev":
+            await conn.execute(f"TRUNCATE TABLE {DB_TABLE} CASCADE;")  # Delete all data in {DB_TABLE} table
+            logger.info(f"🗑 Cleared all data in {DB_TABLE} table.")
+        else: 
+            logger.error(f"❌ DANGER: YOU ARE TRYING TO DELETE: {DB_TABLE} table.")
     finally:
         await conn.close()
 

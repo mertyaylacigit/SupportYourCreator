@@ -15,38 +15,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)  # ✅ Use logger instead of print()
 
-TOKEN = os.getenv("TOKEN")
-YUNITE_API_KEY = os.getenv("YUNITE_API_KEY")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 ENVIRONMENT = os.getenv("ENVIRONMENT")
+DATABASE_URL = os.getenv("DATABASE_URL")
+SECRET_TIMETRACKER_KEY =  os.getenv("SECRET_TIMETRACKER_KEY")
 
-if ENVIRONMENT == "deployment": # production
-    EPIC_CLIENT_ID = os.getenv("EPIC_CLIENT_ID_DEPLOYMENT")
-    EPIC_CLIENT_SECRET = os.getenv("EPIC_CLIENT_SECRET_DEPLOYMENT")
-    EPIC_REDIRECT_URI = "https://supportyourcreator.com/epic_auth"  # Prod redirect
+
+# links
+creativeMapPlayerTimeURL = "https://cdn.discordapp.com/attachments/894683986868203551/1351628595386253373/image.png?ex=67db11b9&is=67d9c039&hm=1c1ac8abb24c82cc25d109d1a7cc4f34947f2ef5fb29e7fd813a2933bddb0abb&"
+sample_image_urls = [creativeMapPlayerTimeURL]
+
+
+
+if ENVIRONMENT == "production": # production/deployment
+    TOKEN = os.getenv("DISCORD_TOKEN_PROD")
+    EPIC_CLIENT_ID = os.getenv("EPIC_CLIENT_ID_PROD")
+    EPIC_CLIENT_SECRET = os.getenv("EPIC_CLIENT_SECRET_PROD")
+    EPIC_REDIRECT_URI = "https://api.supportyourcreator.com/epic_auth"  # uses supportyourcreator.com
+    WELCOME_CHANNEL_ID = 1351627787546656818  # Play2Earn1v1 Discord Server
+    GIVEAWAY_CHANNEL_ID = 1351236909770211359  # Play2Earn1v1 Discord Server
+    OBJECT_STORAGE_BUCKET_ID = os.getenv("OBJECT_STORAGE_BUCKET_ID_PROD") # Play2Earn1v1 Bucket
+    DB_TABLE = "play2earn1v1"
+    ContentCreator_name = "Play2Earn1v1"
+    
+    send_inital_messages=True
     logger.info("Production mode enabled.")                 
 else:  # development
+    TOKEN = os.getenv("DISCORD_TOKEN_DEV")
     EPIC_CLIENT_ID = os.getenv("EPIC_CLIENT_ID_DEV")
     EPIC_CLIENT_SECRET = os.getenv("EPIC_CLIENT_SECRET_DEV")
     EPIC_REDIRECT_URI = "https://87b40d87-33ca-444e-a6d5-bb2e17537b90-00-26bel8cynbx4k.janeway.replit.dev/epic_auth"  # Dev redirect
+    WELCOME_CHANNEL_ID = 1329571928951754823 # SYC Dev Discord Server
+    GIVEAWAY_CHANNEL_ID = 1338535496581644420 # SYC Dev Discord Server
+    OBJECT_STORAGE_BUCKET_ID = os.getenv("OBJECT_STORAGE_BUCKET_ID_DEV") # Dev Bucket
+    DB_TABLE = "dev_db"
+    ContentCreator_name = "play2earn1v1 (dev)"
+    
+    send_inital_messages=False
     logger.info("Development mode enabled.")
     
 
 EPIC_OAUTH_URL = f"https://www.epicgames.com/id/authorize?client_id={EPIC_CLIENT_ID}&response_type=code&scope=basic_profile&redirect_uri={EPIC_REDIRECT_URI}"
 
-CATEGORY_ID = 1329571928482250835
-WELCOME_CHANNEL_ID = 1329571928951754823
-GUILD_ID = 1329571928482250834
-GIVEAWAY_CHANNEL_ID = 1338535496581644420
-FAQ_CHANNEL_ID = 1338868370132435004
-TESTING_CHANNEL_ID = 1339342650444091423
-MERT_DISCORD_ID = 404403851505172532
-ContentCreator_name = "YourCreator"
 
-IMAGESVIDEOS_BUCKET_ID = os.getenv("IMAGESVIDEOS_BUCKET_ID")
-DATABASE_URL = os.getenv("DATABASE_URL")
 
-# links
-creativeMapPlayerTimeURL = "https://cdn.discordapp.com/attachments/894683986868203551/1346532831920128063/edited_image_1.png?ex=67c887ec&is=67c7366c&hm=8fdaaea3bb9bfb858b33e23444a8789bb5b98e2c292a4a1d6f3e98c6bac51073&"
-sample_image_urls = [creativeMapPlayerTimeURL]
+
 

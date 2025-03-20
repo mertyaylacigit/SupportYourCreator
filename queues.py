@@ -4,6 +4,7 @@ import sys
 import os
 import asyncio
 from config import LOGGING_LEVEL
+import psutil
 
 
 # ✅ Setup logging configuration
@@ -135,3 +136,64 @@ class ObjectStorageQueue(BaseDBQueue):
         super().__init__(name="Object Storage", max_workers=max_workers)
 
 # --- END OF DATABASE QUEUE ---
+
+
+
+# --- Queue for CPU Intensive Tasks
+
+class CpuIntensiveQueue:
+    """
+    Queue system for handling CPU-intensive tasks asynchronously.
+    It prevents CPU overload by limiting the number of concurrent CPU-heavy tasks.
+    """
+
+    def __init__(self, max_workers=2):
+        self.queue = asyncio.Queue()
+        self.max_workers = max_workers  # Limit parallel CPU-heavy tasks
+        self.semaphore = asyncio.Semaphore(max_workers)  # Controls concurrency
+        logger.debug(f"CpuIntensiveQueue initialized. Queue size: {self.queue.qsize()}")
+
+    async def add_task(self, func, *args, **kwargs):
+        """Add a CPU-heavy task to the queue."""
+        future = asyncio.get_event_loop().create_future()
+        await self.queue.put((func, args, kwargs, future))
+        logger.debug(f"🖥️ Added CPU task: {func.__name__}, args: {args}")
+        return await future  # Waits for the result
+
+    async def worker(self):
+        """Worker function that processes CPU-heavy tasks."""
+        while True:
+            cpu_usage = psutil.cpu_percent()  # Get current CPU usage
+            logger.info(f"⚙️ CPU Usage: {cpu_usage}%")
+            func, args, kwargs, future = await self.queue.get()
+            async with self.semaphore:  # Limits concurrent CPU-heavy tasks
+                try:
+                    logger.debug(f"🖥️ Processing CPU task: {func.__name__}, args: {args}")
+                    start_time = time.time()
+
+                    # Run CPU-heavy task in an executor to avoid blocking the event loop
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(None, func, *args, **kwargs)
+
+                    future.set_result(response)  # Return result
+                    logger.info(f"✅ CPU task {func.__name__} completed in {time.time() - start_time:.2f}s")
+                except Exception as e:
+                    logger.error(f"❌ Error processing CPU task: {e}")
+                    future.set_exception(e)
+                finally:
+                    self.queue.task_done()
+                    logger.debug(f"CpuIntensiveQueue task done. Remaining: {self.queue.qsize()}")
+
+    async def start_workers(self):
+        """Starts multiple workers for parallel CPU processing (limited by max_workers)."""
+        for i in range(self.max_workers):
+            asyncio.create_task(self.worker())
+            logger.info(f"✅ Started CpuIntensiveQueue worker {i}")
+
+# --- END OF CPU Intensive Queue ---
+
+
+
+
+
+
