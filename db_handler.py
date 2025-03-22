@@ -51,7 +51,8 @@ attributes_list = [
     "timestamp_epic_name",
     "images",  # List of images
     "step_state",  # [epic_name, image_proof] - Tracks user progress.
-    "points_assigned"
+    "points_assigned",
+    "invite"
 ]
 
 # GET
@@ -71,6 +72,7 @@ def initialize_key(discord_id):
         user_data["discord_id"] = str(discord_id)
         user_data["images"] = []  # Initialize empty images list
         user_data["step_state"] = "epic_name"  # The user's next step is to enter their Epic Games name
+        user_data["invite"] = {"used_code": None, "invited_users": [], "total_invites": 0}
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(user_data, file, indent=4)
 
@@ -213,6 +215,44 @@ async def save_image_proof_decision(discord_id, image_url, decision):
     save_user_data(discord_id, user_data)  # Save back to file
     logger.info(f"✅ Saved image proof for user {discord_id}")
 
+
+def save_invite_join_to_database(member, used_invite):
+    inviter = used_invite.inviter
+    initialize_key(inviter.id)
+    inviter_data = load_user_data(inviter.id)
+
+    inviter_data["invite"]["invited_users"].append(str(member.id))
+    inviter_data["invite"]["total_invites"] += 1
+    save_user_data(inviter.id, inviter_data)
+
+    # new member joined to discord server
+    initialize_key(member.id)
+    new_user_data = load_user_data(member.id)
+    
+    new_user_data["invite"]["used_code"] = used_invite.code
+    save_user_data(member.id, new_user_data)
+
+    return inviter_data["invite"]["total_invites"]
+
+
+
+def save_invite_remove_to_database(left_member, inviter_id):
+    initialize_key(left_member.id)
+    left_member_data = load_user_data(left_member.id)
+
+    left_member_data["invite"]["used_code"] = None
+    save_user_data(left_member.id, left_member_data)
+    
+    if inviter_id:
+        inviter_data = load_user_data(inviter_id)
+        if inviter_data:
+            invited_users = inviter_data["invite"].get("invited_users", [])
+            if str(left_member.id) in invited_users:
+                invited_users.remove(str(left_member.id))
+                inviter_data["invite"]["total_invites"] -= 1
+                save_user_data(inviter_id, inviter_data)
+
+            return inviter_data["invite"]["total_invites"]
     
 
 
@@ -251,7 +291,8 @@ async def create_table():
                 timestamp_epic_name TEXT,
                 images JSONB,
                 step_state TEXT,
-                points_assigned INTEGER DEFAULT 0
+                points_assigned INTEGER DEFAULT 0,
+                invite JSONB
             )
         """)
     logger.info("✅ Database table ensured.")
@@ -270,7 +311,8 @@ async def restore_filesystem_from_db():
                 "timestamp_epic_name": row["timestamp_epic_name"],
                 "images": json.loads(row["images"]),
                 "step_state": row["step_state"],
-                "points_assigned": row["points_assigned"]
+                "points_assigned": row["points_assigned"],
+                "invite": json.loads(row["invite"])
             }
 
             # ✅ Save user data in the filesystem
@@ -297,7 +339,8 @@ async def restore_user_from_db(discord_id: int):
             "timestamp_epic_name": row["timestamp_epic_name"],
             "images": json.loads(row["images"]),
             "step_state": row["step_state"],
-            "points_assigned": row["points_assigned"]
+            "points_assigned": row["points_assigned"],
+            "invite": json.loads(row["invite"])
         }
 
         # ✅ Save user data in the filesystem
@@ -315,8 +358,8 @@ async def save_user_data_to_pg(discord_id, data):
         async with PG_SEMAPHORE:
             async with db_pool.acquire() as conn:
                 await conn.execute(f"""
-                    INSERT INTO {DB_TABLE} (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, step_state, points_assigned)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    INSERT INTO {DB_TABLE} (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, step_state, points_assigned, invite)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     ON CONFLICT (discord_id) DO UPDATE SET
                         discord_name = EXCLUDED.discord_name,
                         dm_link = EXCLUDED.dm_link,
@@ -324,7 +367,8 @@ async def save_user_data_to_pg(discord_id, data):
                         timestamp_epic_name = EXCLUDED.timestamp_epic_name,
                         images = EXCLUDED.images,
                         step_state = EXCLUDED.step_state,
-                        points_assigned = EXCLUDED.points_assigned
+                        points_assigned = EXCLUDED.points_assigned,
+                        invite = EXCLUDED.invite
                 """, 
                     str(discord_id),
                     data["discord_name"],
@@ -333,7 +377,8 @@ async def save_user_data_to_pg(discord_id, data):
                     data["timestamp_epic_name"],
                     json.dumps(data["images"]),
                     data["step_state"],
-                    data.get("points_assigned", 0)
+                    data.get("points_assigned", 0),
+                    json.dumps(data["invite"])
                 )
     
                 logger.debug(f"save_user_data_to_pg() executed for user {discord_id}")

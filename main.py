@@ -8,15 +8,18 @@ import random
 import time
 import logging
 import aiohttp
+from multiprocessing import Process
 from datetime import datetime
 from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
 from config import TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
-from config import send_inital_messages
+from config import send_inital_messages, TOKEN_play2earn
 from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL, ContentCreator_name
-from db_handler import db_pool, DB_DIR, load_user_data, restore_user_from_db, save_dm_link_to_database, save_epic_name_to_database, save_image_proof_decision, init_pg
+from db_handler import db_pool, DB_DIR, initialize_key, load_user_data, restore_user_from_db, init_pg, save_dm_link_to_database, save_epic_name_to_database
+from db_handler import save_image_proof_decision
 from queues import RateLimitQueue, CpuIntensiveQueue
 from ai import check_image
+from play2earn_bot import play2earn_bot
 
 from flask import Flask, request, redirect
 import threading
@@ -42,6 +45,9 @@ intents.reactions = True
 intents.members = True
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+
 rate_limiter = RateLimitQueue(50)
 logger.info("✅ created RateLimitQueue(50) succesfully!")
 
@@ -124,6 +130,8 @@ async def on_message(message):
 
 
 
+
+
 @bot.event
 async def on_ready():
     logger.info(f"✅ Logged in as {bot.user}")
@@ -145,6 +153,8 @@ async def on_ready():
     
     logger.info("begin Testing ✅✅✅✅✅")
     #await bot.tree.sync()
+
+    
     logger.info("end Testing ✅✅✅✅✅")
 
 
@@ -155,8 +165,6 @@ async def on_ready():
     bot.add_view(Welcome2VerifyView()) 
     bot.add_view(Verify2EnterIDView(None))
 
-
-    
     channel = bot.get_channel(WELCOME_CHANNEL_ID)
 
     if channel:
@@ -189,7 +197,7 @@ async def on_ready():
             await giveaway_message.add_reaction("✋")
             logger.info("✅⚠️ Embed sent to Giveaway channel.")
 
-    logger.info("✅Bot is ready!")
+    logger.info("✅SupportYourCreator Bot is ready!")
 
 
 
@@ -548,6 +556,10 @@ def epic_callback():
 # --- END OF EPIC GAMES AUTHENTICATION ---
 
 
+
+def run_bot(bot, token):
+    bot.run(token)
+
 if __name__ == "__main__":
 
     # ❌DANGER❌ DELETE local fileystem database at /data which we alse be the case when restarting the deployed bot
@@ -568,7 +580,13 @@ if __name__ == "__main__":
     
     #asyncio.run(stress_test_concurrent_users(10))
 
-    bot.run(TOKEN)
+    p1 = Process(target=run_bot, args=(bot, TOKEN))
+    p2 = Process(target=run_bot, args=(play2earn_bot, TOKEN_play2earn))
+    p1.start()
+    p2.start()
+    p1.join()
+    p2.join()
+    
     logger.info("✅⚠️ Discord Bot started")
 
     

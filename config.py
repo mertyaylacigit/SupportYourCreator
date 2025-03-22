@@ -28,11 +28,13 @@ sample_image_urls = [creativeMapPlayerTimeURL]
 
 if ENVIRONMENT == "production": # production/deployment
     TOKEN = os.getenv("DISCORD_TOKEN_PROD")
+    TOKEN_play2earn = os.getenv("DISCORD_TOKEN_PLAY2EARN_PROD")
     EPIC_CLIENT_ID = os.getenv("EPIC_CLIENT_ID_PROD")
     EPIC_CLIENT_SECRET = os.getenv("EPIC_CLIENT_SECRET_PROD")
     EPIC_REDIRECT_URI = "https://api.supportyourcreator.com/epic_auth"  # uses supportyourcreator.com
     WELCOME_CHANNEL_ID = 1351627787546656818  # Play2Earn1v1 Discord Server
     GIVEAWAY_CHANNEL_ID = 1351236909770211359  # Play2Earn1v1 Discord Server
+    INVITE_CHANNEL_ID = 1352803802972946453
     OBJECT_STORAGE_BUCKET_ID = os.getenv("OBJECT_STORAGE_BUCKET_ID_PROD") # Play2Earn1v1 Bucket
     DB_TABLE = "play2earn1v1"
     ContentCreator_name = "Play2Earn1v1"
@@ -41,11 +43,13 @@ if ENVIRONMENT == "production": # production/deployment
     logger.info("Production mode enabled.")                 
 else:  # development
     TOKEN = os.getenv("DISCORD_TOKEN_DEV")
+    TOKEN_play2earn = os.getenv("DISCORD_TOKEN_PLAY2EARN_DEV")
     EPIC_CLIENT_ID = os.getenv("EPIC_CLIENT_ID_DEV")
     EPIC_CLIENT_SECRET = os.getenv("EPIC_CLIENT_SECRET_DEV")
     EPIC_REDIRECT_URI = "https://87b40d87-33ca-444e-a6d5-bb2e17537b90-00-26bel8cynbx4k.janeway.replit.dev/epic_auth"  # Dev redirect
     WELCOME_CHANNEL_ID = 1329571928951754823 # SYC Dev Discord Server
     GIVEAWAY_CHANNEL_ID = 1338535496581644420 # SYC Dev Discord Server
+    INVITE_CHANNEL_ID = 1338874480402890752
     OBJECT_STORAGE_BUCKET_ID = os.getenv("OBJECT_STORAGE_BUCKET_ID_DEV") # Dev Bucket
     DB_TABLE = "dev_db"
     ContentCreator_name = "play2earn1v1 (dev)"
