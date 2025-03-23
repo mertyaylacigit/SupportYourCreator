@@ -12,7 +12,7 @@ from multiprocessing import Process
 from datetime import datetime
 from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
-from config import TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
+from config import GUILD_ID, TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
 from config import send_inital_messages, TOKEN_play2earn
 from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL, ContentCreator_name
 from db_handler import db_pool, DB_DIR, initialize_key, load_user_data, restore_user_from_db, init_pg, save_dm_link_to_database, save_epic_name_to_database
@@ -60,6 +60,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
+
     if isinstance(message.channel, discord.DMChannel):
         user_data = load_user_data(message.author.id)
         if user_data is None:
@@ -102,15 +103,47 @@ async def on_message(message):
                                 giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
                                 if user_data["points_assigned"] is None: # inital points_assigned = None so only change permission the first time
                                     await rate_limiter.add_request(giveaway_channel.set_permissions, (message.author,), {"read_messages": True})
+
+                                time_x = 1 + decision['played_time'] / 60
+                                invites_x = user_data["invite"]["total_invites"]
                                 
                                 embed = discord.Embed(
                                     description="**✅ Your proof has been accepted!**\n\n"
-                                                f"Total playtime: {decision['played_time']} minutes\n"
-                                                f"Your winning chance is: {1 + decision['played_time'] / 60}x\n\n"
+                                                f"Total playtime: **{decision['played_time']} minutes**\n"
+                                                f"Your winning chance is: **{(time_x + (invites_x*1)):.2f}x** ({time_x:.2f}x by played time + {(invites_x*1):.2f}x by invites)\n\n"
                                                 f"Checkout the giveaway channel: {giveaway_channel.mention}",
                                     color=discord.Color.green()
                                 )
                                 embed.set_footer(text="Thank you for your support! ❤️")
+                                
+                                guild = bot.get_guild(GUILD_ID)
+                                time_role_map = {120: "Gold", 500: "Diamond", 1200: "Champion", 6000: "Unreal" }
+                                last_rolename = None
+                                role_name = "New"
+                                for time_limit in time_role_map:
+                                    if decision['played_time'] >= time_limit:
+                                        last_rolename = role_name
+                                        role_name = time_role_map[time_limit]
+
+                                role = discord.utils.get(guild.roles, name=role_name)
+
+                                if role :
+                                    member = guild.get_member(message.author.id)
+                                    if member is None:
+                                        # Not cached, fetch from API
+                                        member = await guild.fetch_member(message.author.id)
+                                    
+                                    if last_rolename:
+                                        last_role = discord.utils.get(guild.roles, name=last_rolename)
+                                        if last_role:
+                                            await member.remove_roles(last_role)
+                                        else:
+                                            logger.warning(f"❌ Role {last_rolename} not foundin {guild.name}!")
+                                    await member.add_roles(role)
+                                    logger.info(f"✅ Assigned {role_name} role to {member.display_name}")
+                                else:
+                                    logger.warning(f"❌ {role_name} not found in {guild.name}!")
+                            
                             else:
                                 embed = discord.Embed(
                                     description="❌ **Your proof has been rejected!**\n\n"
@@ -271,7 +304,7 @@ async def giveaway(interaction: discord.Interaction, message_id:str,  anzahl_gew
                     "\n".join(f"{place+1}. {mention} 🥳" for place, mention in enumerate(winner_mentions)) +
                     "\n\n" +
                     "Winning chances for all supporters: \n"  +
-                    "\n".join(f"@{user.name}: **{chance}x** winning chance" for user, chance in zip(participants, user_weights))
+                    "\n".join(f"@{user.name}: **{chance:.2f}x** winning chance" for user, chance in zip(participants, user_weights))
                     ),
         
         color=discord.Color.gold()
@@ -321,7 +354,7 @@ async def stresstest(interaction: discord.Interaction, frequency: int):
     await stress_test_concurrent_users(frequency)
 
     # ✅ Send the final response
-    await interaction.followup.send(f"✅ Stress test completed with frequency {frequency}")
+    await interaction.followup.send(f"✅ Stress test completed with frequency {frequency}", ephemeral=True)
     logger.info(f"✅⚠️Stress test started with frequency {frequency}")
 
 @bot.tree.command(name="stresstest_cpuqueue")
@@ -332,12 +365,12 @@ async def stresstest_cpuqueue(interaction: discord.Interaction, max_workers: int
     await test_cpu_queue(max_workers)
 
     # ✅ Send the final response
-    await interaction.followup.send(f"✅ CPU QUEUE Stress test completed ")
+    await interaction.followup.send("✅ CPU QUEUE Stress test completed ", ephemeral=True)
 
 @bot.tree.command(name="sync2")
 async def sync2(interaction: discord.Interaction):
     await bot.tree.sync()
-    await interaction.response.send_message(f"✅ Slash commands synced2! commands: {await bot.tree.fetch_commands()}")
+    await interaction.response.send_message(f"✅ Slash commands synced2! commands: {await bot.tree.fetch_commands()}", ephemeral=True)
     logger.info("✅⚠️ Slash commands synced2! commands")
 
 
@@ -347,9 +380,19 @@ async def restore_user(interaction: discord.Interaction, user: discord.Member):
     user_data = await restore_user_from_db(user.id)
 
     if user_data:
-        await interaction.response.send_message(f"✅ {user.mention} restored from database to local cache!")
+        await interaction.response.send_message(f"✅ {user.mention} restored from database to local cache!", ephemeral=True)
     else:
-        await interaction.response.send_message(f"❌ No data found for {user.mention}.")
+        await interaction.response.send_message(f"❌ No data found for {user.mention}.", ephemeral=True)
+
+@bot.tree.command(name="manage_roles")
+async def manage_roles(interaction: discord.Interaction, mode: str, user: discord.Member, role: discord.Role):
+
+    if mode == "add":
+        await user.add_roles(role)
+        await interaction.response.send_message(f"✅ Added role {role.name} to {user.mention}", ephemeral=True)
+    elif mode == "remove":
+        await user.remove_roles(role)
+        await interaction.response.send_message(f"✅ Removed role {role.name} from {user.mention}", ephemeral=True)
     
 
 
@@ -418,13 +461,6 @@ class Verify2EnterIDView(BaseView):
 
 
 
-### ✅ RUN FLASK SERVER AS A BACKGROUND THREAD ###
-def run_discord_app():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    discord_app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=False)
-
-
 # TESTS
 
 async def simulate_user_traffic(i):
@@ -486,12 +522,16 @@ discord_app = Flask(__name__)
 
 @discord_app.route('/epic_auth') 
 def epic_callback():
+    print("EPIC CALLBACK")
     code = request.args.get('code')
     discord_id = request.args.get('state')
-    user = bot.get_user(int(discord_id))
+    guild = bot.get_guild(int(GUILD_ID)) # BUG Potential: if guild ID changes
+    print(guild, GUILD_ID)
+    user = guild.get_member(int(discord_id)) 
+    print(f"HERE 11: {discord_id, user, code} ")
     if user is None:
         async def fetch_user():
-            user = await rate_limiter.add_request(bot.fetch_user, (int(discord_id),), {})
+            user = await rate_limiter.add_request(guild.fetch_member, (int(discord_id),), {})
             return user
         user = asyncio.run(fetch_user())
         if user is None:
@@ -502,6 +542,7 @@ def epic_callback():
     logger.debug(f"User found (/epic_auth): {user}")
 
     async def exchange_code():
+        print("HERE 4")
         async with aiohttp.ClientSession() as session:
             token_url = "https://api.epicgames.dev/epic/oauth/v1/token"
             data = {
@@ -509,6 +550,7 @@ def epic_callback():
                 'code': code,
                 'redirect_uri': EPIC_REDIRECT_URI
             }
+            print("HERE 5")
             headers = aiohttp.BasicAuth(EPIC_CLIENT_ID, EPIC_CLIENT_SECRET)
             start = time.time()
             async with session.post(token_url, data=data, auth=headers) as resp:
@@ -529,6 +571,14 @@ def epic_callback():
 
                     
                     db_resp = save_epic_name_to_database(user.id, user_data['preferred_username'])
+
+                    role = discord.utils.get(guild.roles, name="Verified")
+                    
+                    if role:
+                        await user.add_roles(role)
+                        logger.info(f"✅ Assigned verified role to {user.display_name}")
+                    else:
+                        logger.warning(f"❌ verified or new role not found in {guild.name}")
                     
                     # next step: image_proof
                     embed = discord.Embed(
@@ -548,8 +598,10 @@ def epic_callback():
                         {"embed": embed})
                 return db_resp
 
+    print("HERE 2")
     future = asyncio.run_coroutine_threadsafe(exchange_code(), bot.loop)
     result = future.result()
+    print("HERE 3")
 
     return redirect("https://supportyourcreator.com/success.html")  # Redirect to Discord or another link
     
@@ -559,6 +611,21 @@ def epic_callback():
 
 def run_bot(bot, token):
     bot.run(token)
+
+### RUN FLASK SERVER AS A BACKGROUND THREAD ###
+def run_discord_app():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    discord_app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=False)
+
+def run_bot_with_flask(bot, token):
+    # Start Flask in a thread (same process)
+    flask_thread = threading.Thread(target=run_discord_app)
+    flask_thread.start()
+
+    # Start the Discord bot (blocks until closed)
+    bot.run(token)
+
 
 if __name__ == "__main__":
 
@@ -573,20 +640,19 @@ if __name__ == "__main__":
 
 
     
-    # Start Flask in a separate thread
-    discord_app_thread = threading.Thread(target=run_discord_app)
-    discord_app_thread.start() # WARNING: dont notify when TESTING because populated discord user will end up in 400 errors of Discord API rate limit
-    logger.info("✅⚠️ Flask server Discord Notify Handler started")
     
     #asyncio.run(stress_test_concurrent_users(10))
 
-    p1 = Process(target=run_bot, args=(bot, TOKEN))
+    p1 = Process(target=run_bot_with_flask, args=(bot, TOKEN))
     p2 = Process(target=run_bot, args=(play2earn_bot, TOKEN_play2earn))
     p1.start()
     p2.start()
-    p1.join()
-    p2.join()
     
+    #discord_app_thread = threading.Thread(target=run_discord_app)
+    #discord_app_thread.start()
+    #bot.run(TOKEN)
+    
+    logger.info("✅⚠️ Flask server Discord Notify Handler started")
     logger.info("✅⚠️ Discord Bot started")
 
     

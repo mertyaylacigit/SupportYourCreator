@@ -31,8 +31,8 @@ db_pool = None
 logger.info("✅✅✅✅✅   db_pool = None  ✅✅✅✅✅")
 bucketClient = Client(bucket_id=OBJECT_STORAGE_BUCKET_ID)
 
-pg_queue = PGQueue(max_workers=4) 
-object_storage_queue = ObjectStorageQueue(max_workers=4) # increase max_workers to parallelize uploads
+pg_queue = PGQueue(max_workers=1) 
+object_storage_queue = ObjectStorageQueue(max_workers=1) # increase max_workers to parallelize uploads
 logger.info("✅ Created PGQueue and ObjectStorageQueue successfully!")
 
 PG_SEMAPHORE = asyncio.Semaphore(10)  # Limit the number of concurrent database operations to 10
@@ -72,7 +72,7 @@ def initialize_key(discord_id):
         user_data["discord_id"] = str(discord_id)
         user_data["images"] = []  # Initialize empty images list
         user_data["step_state"] = "epic_name"  # The user's next step is to enter their Epic Games name
-        user_data["invite"] = {"used_code": None, "invited_users": [], "total_invites": 0}
+        user_data["invite"] = {"used_code": None, "inviter_id": None, "invited_users": [], "total_invites": 0}
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(user_data, file, indent=4)
 
@@ -230,6 +230,7 @@ def save_invite_join_to_database(member, used_invite):
     new_user_data = load_user_data(member.id)
     
     new_user_data["invite"]["used_code"] = used_invite.code
+    new_user_data["invite"]["inviter_id"] = str(inviter.id)
     save_user_data(member.id, new_user_data)
 
     return inviter_data["invite"]["total_invites"]
@@ -241,18 +242,38 @@ def save_invite_remove_to_database(left_member, inviter_id):
     left_member_data = load_user_data(left_member.id)
 
     left_member_data["invite"]["used_code"] = None
+    left_member_data["invite"]["inviter_id"] = None
     save_user_data(left_member.id, left_member_data)
     
-    if inviter_id:
-        inviter_data = load_user_data(inviter_id)
-        if inviter_data:
-            invited_users = inviter_data["invite"].get("invited_users", [])
-            if str(left_member.id) in invited_users:
-                invited_users.remove(str(left_member.id))
-                inviter_data["invite"]["total_invites"] -= 1
-                save_user_data(inviter_id, inviter_data)
+    inviter_data = load_user_data(inviter_id)
+    if inviter_data:
+        invited_users = inviter_data["invite"].get("invited_users", [])
+        if str(left_member.id) in invited_users:
+            invited_users.remove(str(left_member.id))
+            inviter_data["invite"]["total_invites"] -= 1
+            save_user_data(inviter_id, inviter_data)
+            
+        return inviter_data["invite"]["total_invites"]
 
-            return inviter_data["invite"]["total_invites"]
+
+def restore_invite_user_map():
+    restored_map = {}
+
+    for filename in os.listdir(DB_DIR):
+        if filename.endswith(".json"):
+            filepath = os.path.join(DB_DIR, filename)
+            with open(filepath, "r", encoding="utf-8") as file:
+                user_data = json.load(file)
+                discord_id = int(user_data["discord_id"])
+                invite_info = user_data.get("invite", {})
+
+                used_code = invite_info.get("used_code")
+                inviter_id = invite_info.get("inviter_id")
+
+                if used_code and inviter_id:
+                    restored_map[discord_id] = (used_code, int(inviter_id))
+
+    return restored_map
     
 
 

@@ -12,8 +12,9 @@ from datetime import datetime
 from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
 from config import TOKEN_play2earn, LOGGING_LEVEL, INVITE_CHANNEL_ID
-from db_handler import save_invite_join_to_database, save_invite_remove_to_database
+from db_handler import save_invite_join_to_database, save_invite_remove_to_database, restore_invite_user_map, init_pg
 
+# DANGER: TODO For scalability: Here I dont use API rate limiter 
 
 # ✅ Setup logging configuration
 logging.basicConfig(
@@ -40,13 +41,18 @@ invite_user_map = {}  # {member_id: (used_code, inviter_id)}
 
 @play2earn_bot.event
 async def on_ready():
+    global invites, invite_user_map
+
+    # ✅ Initialize PostgreSQL (for this process)
+    await init_pg()
+    logger.info("✅ Connected to PostgreSQL in play2earn_bot process.")
 
     for guild in play2earn_bot.guilds:
         invite_list = await guild.invites()
         invites[guild.id] = {invite.code: invite.uses for invite in invite_list}
 
-    invite_channel = play2earn_bot.get_channel(INVITE_CHANNEL_ID)
-    await invite_channel.send(f"PLAY2EARN BOT Logged in as {play2earn_bot.user}")
+    invite_user_map = restore_invite_user_map()
+
     logger.info("✅Play2Earn Bot is ready!")
 
 
@@ -54,6 +60,14 @@ async def on_ready():
 @play2earn_bot.event
 async def on_member_join(member):
     global invites
+
+    role = discord.utils.get(member.guild.roles, name="New")
+    if role:
+        await member.add_roles(role)
+        logger.info(f"✅ Assigned New role to {member.display_name}")
+    else:
+        logger.warning(f"❌ New role not found in {member.guild.name}")
+        
     guild = member.guild
     new_invites = await guild.invites()
 
@@ -82,8 +96,16 @@ async def on_member_join(member):
         else:
             invite_channel = play2earn_bot.get_channel(INVITE_CHANNEL_ID)
             await invite_channel.send(f"{used_invite.inviter.mention} invited {member.mention} "
-                                      f"and has now {inviter_total_invites} invites, thus **{inviter_total_invites}x** "
+                                      f"and has now {inviter_total_invites} invites, thus **{inviter_total_invites*1}x** "
                                       f"more chance to win the giveaway!")
+            inviter_role = discord.utils.get(member.guild.roles, name="Inviter")
+            if inviter_role:
+                inviter_member = guild.get_member(inviter_id)
+                if inviter_member is None:
+                    # Not cached, fetch from API
+                    inviter_member = await guild.fetch_member(inviter_member.author.id)
+                await inviter_member.add_roles(inviter_role)
+                logger.info(f"✅ Assigned Inviter role to {inviter_member.display_name}")
 
 
 
@@ -101,7 +123,8 @@ async def on_member_remove(member):
             invite_channel = play2earn_bot.get_channel(INVITE_CHANNEL_ID)
             inviter = play2earn_bot.get_user(inviter_id)
             await invite_channel.send(f"{member.mention} left the channel and the inviter {inviter.mention} has "
-                                      f"now {inviter_total_invites} invites, thus **{inviter_total_invites}x** more chance to win the giveaway!")
+                                      f"now {inviter_total_invites} invites, thus **{inviter_total_invites*1}x** "
+                                      "more chance to win the giveaway!")
     
     invite_user_map.pop(member.id, None)
 
