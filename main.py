@@ -10,10 +10,11 @@ import logging
 import aiohttp
 from multiprocessing import Process
 from datetime import datetime
+from discord import app_commands
 from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
-from config import GUILD_ID, TOKEN, WELCOME_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
-from config import send_inital_messages, TOKEN_play2earn
+from config import GUILD_ID, TOKEN, SUBMIT_PROOF_CHANNEL_ID, GIVEAWAY_CHANNEL_ID, EPIC_CLIENT_SECRET, EPIC_CLIENT_ID, EPIC_REDIRECT_URI, EPIC_OAUTH_URL
+from config import send_inital_messages, TOKEN_play2earn, ADMIN_IDs
 from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL, ContentCreator_name
 from db_handler import db_pool, DB_DIR, initialize_key, load_user_data, restore_user_from_db, init_pg, save_dm_link_to_database, save_epic_name_to_database
 from db_handler import save_image_proof_decision
@@ -119,7 +120,7 @@ async def on_message(message):
                                 guild = bot.get_guild(GUILD_ID)
                                 time_role_map = {120: "Gold", 500: "Diamond", 1200: "Champion", 6000: "Unreal" }
                                 last_rolename = None
-                                role_name = "New"
+                                role_name = "Bronze"
                                 for time_limit in time_role_map:
                                     if decision['played_time'] >= time_limit:
                                         last_rolename = role_name
@@ -163,8 +164,6 @@ async def on_message(message):
 
 
 
-
-
 @bot.event
 async def on_ready():
     logger.info(f"✅ Logged in as {bot.user}")
@@ -185,20 +184,18 @@ async def on_ready():
     
     
     logger.info("begin Testing ✅✅✅✅✅")
-    #await bot.tree.sync()
+    await bot.tree.sync()
 
     
     logger.info("end Testing ✅✅✅✅✅")
 
-
-    
 
     # Re-register the view globally after restart because the view is not registered by default after restarting the bot and not sending the view
     bot.add_view(BaseView())
     bot.add_view(Welcome2VerifyView()) 
     bot.add_view(Verify2EnterIDView(None))
 
-    channel = bot.get_channel(WELCOME_CHANNEL_ID)
+    channel = bot.get_channel(SUBMIT_PROOF_CHANNEL_ID)
 
     if channel:
         if send_inital_messages:
@@ -233,8 +230,15 @@ async def on_ready():
     logger.info("✅SupportYourCreator Bot is ready!")
 
 
+def is_admin_user():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        return interaction.user.id in ADMIN_IDs
+    return app_commands.check(predicate)
+
+
 
 @bot.tree.command(name="gewinnspiel", description="anzahl_gewinner Gewinner aller Supporter auslosen")
+@is_admin_user()
 async def giveaway(interaction: discord.Interaction, message_id:str,  anzahl_gewinner: int):
     """Draw NUMBER winners from the giveaway participants."""
     if interaction.channel_id != GIVEAWAY_CHANNEL_ID:
@@ -347,6 +351,7 @@ def weighted_random_selection(participants, user_weights, num_winners):
 
 
 @bot.tree.command(name="stresstest")
+@is_admin_user()
 async def stresstest(interaction: discord.Interaction, frequency: int):
     """Starts a stress test with the specified frequency (in seconds)."""
     # Defer response to prevent expiration
@@ -358,6 +363,7 @@ async def stresstest(interaction: discord.Interaction, frequency: int):
     logger.info(f"✅⚠️Stress test started with frequency {frequency}")
 
 @bot.tree.command(name="stresstest_cpuqueue")
+@is_admin_user()
 async def stresstest_cpuqueue(interaction: discord.Interaction, max_workers: int):
     """Starts a stress test with the specified frequency (in seconds)."""
     # Defer response to prevent expiration
@@ -368,6 +374,7 @@ async def stresstest_cpuqueue(interaction: discord.Interaction, max_workers: int
     await interaction.followup.send("✅ CPU QUEUE Stress test completed ", ephemeral=True)
 
 @bot.tree.command(name="sync2")
+@is_admin_user()
 async def sync2(interaction: discord.Interaction):
     await bot.tree.sync()
     await interaction.response.send_message(f"✅ Slash commands synced2! commands: {await bot.tree.fetch_commands()}", ephemeral=True)
@@ -375,6 +382,7 @@ async def sync2(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="restore_user")
+@is_admin_user()
 async def restore_user(interaction: discord.Interaction, user: discord.Member):
     """Restores a specific user's data from PostgreSQL to the local cache."""
     user_data = await restore_user_from_db(user.id)
@@ -385,6 +393,7 @@ async def restore_user(interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(f"❌ No data found for {user.mention}.", ephemeral=True)
 
 @bot.tree.command(name="manage_roles")
+@is_admin_user()
 async def manage_roles(interaction: discord.Interaction, mode: str, user: discord.Member, role: discord.Role):
 
     if mode == "add":
@@ -578,7 +587,7 @@ def epic_callback():
                         await user.add_roles(role)
                         logger.info(f"✅ Assigned verified role to {user.display_name}")
                     else:
-                        logger.warning(f"❌ verified or new role not found in {guild.name}")
+                        logger.warning(f"❌ Verified role not found in {guild.name}")
                     
                     # next step: image_proof
                     embed = discord.Embed(
