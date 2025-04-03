@@ -1,10 +1,13 @@
 import os
 import sys
 import discord
+import asyncio
+from multiprocessing import Process
 from discord.ext import commands
 from discord.ui import View, Button
-from config import TOKEN_play2earn
+from config import GIVEAWAY_CHANNEL_ID, TOKEN_play2earn
 from play2earn_bot import SupportView
+from main import Welcome2SubmitView
 
 if __name__ == "__main__":
     intents = discord.Intents.default()
@@ -12,6 +15,7 @@ if __name__ == "__main__":
     intents.guilds = True
     intents.members = True
     play2earn_bot = commands.Bot(command_prefix="!", intents=intents)
+    bot = commands.Bot(command_prefix="!", intents=intents)
 
     
 
@@ -44,66 +48,64 @@ if __name__ == "__main__":
         
         giveaway_embed = discord.Embed(
             title="",
-            description="### Welcome to the Official Discord Server of the Play2Earn 1v1 Map!",
+            description="### Willkommen auf dem offiziellen Discord Server der Play2Earn 1v1 Map!",
             color=discord.Color.from_rgb(0, 255, 255)  # Cyan
         )
         giveaway_embed.add_field(name="\n", value="", inline=False)
 
         giveaway_embed.add_field(
-            name="🌍 Our Mission",
+            name="🌍 Unsere Mission",
             value=(
-                "The Fortnite Island Creator Program gives 40% of Fortnite’s revenue to map creators — "
-                "but most of that money goes to a few big creators.\n"
-                "**We're here to change that!**\n"
-                "Play2Earn is a **community-driven project** built to share that income fairly with the entire Fortnite community. "
-                "Instead of making a few creators rich, **we want everyone to get a piece of the cake!**\n"
-                "Play2Earn isn’t just another random 1v1 Map — it’s a **movement to reshape Fortnite’s creator economy**.\n"
-                "We're building a fairer system where **everyone** can benefit — not just the top few."
+                "Das Fortnite Island Creator Program gibt 40 % der Einnahmen an Map-Ersteller – "
+                "aber der Großteil geht an einige wenige große Creator.\n"
+                "**Wir wollen das ändern!**\n"
+                "Play2Earn ist ein **Community-Projekt**, das die Einnahmen mit der ganzen Fortnite-Community teilt. "
+                "Anstatt nur ein paar Creator reich zu machen, **soll auch die Community profitieren!**\n"
+                "Play2Earn ist nicht einfach eine weitere random 1v1 Map – es ist eine **Bewegung, um Fortnite’s Creator-Ökonomie zu verändern**.\n"
             ),
             inline=False
         )
         giveaway_embed.add_field(name="\n", value="", inline=False)
         giveaway_embed.add_field(
-            name="🚀 How to Join the Giveaway",
+            name="✅ Teilnahme am Giveaway",
             value=(
-                "**1.** Play the map **Play2Earn 1v1**\n"
-                "**2.** Press the **UPLOAD** button in the map and take a screenshot of it\n"
-                "**3.** Head to `#submit-proof`, click **Verify** and go to your DMs\n"
-                "**4.** Link your Epic account and send your screenshot to the **SupportYourCreator Bot**\n"
-                "**5.** Once approved, you'll get access to the `🔒 🎁giveaway🎁` channel\n"
-                "**6.** React to the ✋ emoji to officially enter the giveaway 🎉"
+                "**1.** Spiele die **Play2Earn 1v1** Map\n"
+                "**2.** Drücke den **SUBMIT**-Button in der Map und mache einen Screenshot oder ein Bild mit deinem Handy\n"
+                "**3.** Klicke unten auf `Beweis senden` und gehe dann in die DMs von dem Bot\n"
+                "**4.** Schicke ein Bild von Beweis deiner gespielten Minuten an den Bot\n"
+                "**5.** Danach hast du Zugang auf den `🔒 🎁giveaway🎁` Kanal\n"
+                "**6.** Reagiere dort auf das ✋ Emoji, um beim Giveaway teilzunehmen 🎉"
             ),
             inline=False
         )
         giveaway_embed.add_field(name="\n", value="", inline=False)
         giveaway_embed.add_field(
-            name="📈 How Your Chances Are Calculated",
+            name="🚀 Gewinnchancen erhöhen",
             value=(
-                "- **1 hour played = +1x chance** to win\n"
-                "- **1 successful invite = +1x chance** to win\n"
-                "- More average players = more income = bigger prize pool 💰\n"
-                "There’s no limit — the more you play and share, the better your odds!"
+                "- **1 Stunde gespielt = +1x Chance**\n"
+                "- **1 erfolgreicher Invite = +1x Chance**\n"
+                "- Mehr aktive Spieler = mehr Einnahmen = größerer Gewinn 💰"
             ),
             inline=False
         )
         giveaway_embed.add_field(name="\n", value="", inline=False)
         giveaway_embed.add_field(
-            name="💸 Where Does the Money Go?",
+            name="💸 Woher kommt das Geld?",
             value=(
-                "All of this comes from the **map’s income**.\n"
-                "- **60%** is given back to the community through giveaways\n"
-                "- **35%** goes to **content creators** via invite rewards\n"
-                "- **5%** supports project development and maintenance"
+                "Alles stammt aus den **Einnahmen der Map**:\n"
+                "- **60 %** gehen an die Community als Giveaways\n"
+                "- **35 %** an Content Creator\n"
+                "- **5 %** für Projektentwicklung, Marketing & Wartung"
             ),
             inline=False
         )
         giveaway_embed.add_field(name="\n", value="", inline=False)
-        current_pool_channel = play2earn_bot.get_channel(1354449930323886266)
+        current_pool_channel = play2earn_bot.get_channel(CURRENT_POOL_CHANNEL_ID)
         giveaway_embed.add_field(
-            name="📅🎁 When’s the Next Giveaway?",
+            name="📅🎁 Nächstes Giveaway",
             value=(
-                f"The next giveaway will be on Sunday 13th April 2025. {current_pool_channel.mention}\n"
-                "Based on current trends, **1 hour of playtime = approx. $0.05** *(estimate only)*."
+                f"Das nächste Giveaway ist am Sonntag, den 13. April 2025. {current_pool_channel.mention}\n"
+                "Aktueller Schätzwert: **1 Stunde Spielzeit = ca. $0.05** *(nur Schätzung)*."
             ),
             inline=False
         )
@@ -111,14 +113,13 @@ if __name__ == "__main__":
         giveaway_embed.add_field(name="\n", value="", inline=False)
         giveaway_embed.add_field(name="\n", value="", inline=False)
         giveaway_embed.add_field(
-            name="🏆 Player Roles",
+            name="🏆 Spielerrollen",
             value=(
-                f"{get_role('Verified').mention} → Linked Epic Games account\n\n"
-                f"{get_role('Bronze').mention} → Played **0 minutes** (newly joined)\n"
-                f"{get_role('Gold').mention} → Played **120 minutes**\n"
-                f"{get_role('Diamond').mention} → Played **500 minutes**\n"
-                f"{get_role('Champion').mention} → Played **1,200 minutes**\n"
-                f"{get_role('Unreal').mention} → Played **6,000 minutes**"
+                f"{get_role('Bronze').mention} → **0 Minuten** gespielt (neu)\n"
+                f"{get_role('Gold').mention} → **120 Minuten** gespielt\n"
+                f"{get_role('Diamond').mention} → **500 Minuten** gespielt\n"
+                f"{get_role('Champion').mention} → **1.200 Minuten** gespielt\n"
+                f"{get_role('Unreal').mention} → **6.000 Minuten** gespielt"
             ),
             inline=False
         )
@@ -131,32 +132,32 @@ if __name__ == "__main__":
         # --- RULES MESSAGE ---
 
         rules_embed = discord.Embed(
-            title="📜 Server Rules",
+            title="📜 Serverregeln",
             color=discord.Color.red()
         )
         rules_embed.add_field(
-            name="1) General",
-            value="• Chat in English, be respectful. Spam, advertisement, hate-speech, racism, sexual harassment, threats, impersonation will result in a ban!",
+            name="1) Allgemeines",
+            value="• Respektvoll bleiben. Spam, Werbung, Hassrede, Rassismus, sexuelle Belästigung, Bedrohungen, Identitätsdiebstahl → Sofortiger Bann!",
             inline=False
         )
         rules_embed.add_field(
-            name="2) Disputes",
-            value="• Do not start or bring any unnecessary drama. Topics such as religion and politics are deemed too inflammatory/controversial and provocative. Issues with other members may only be solved in private.",
+            name="2) Streitereien",
+            value="• Kein unnötiges Drama. Religion und Politik sind tabu. Probleme bitte privat klären.",
             inline=False
         )
         rules_embed.add_field(
-            name="3) Privacy",
-            value="• You may neither publicly nor privately expose any personal information of any member in this server.",
+            name="3) Privatsphäre",
+            value="• Keine privaten Daten anderer Mitglieder öffentlich oder privat teilen.",
             inline=False
         )
         rules_embed.add_field(
-            name="4) Terms of Service",
-            value="• Please follow the Discord & Epic Games Terms of Service. Failing to do so will result in a ban.",
+            name="4) Nutzungsbedingungen",
+            value="• Bitte haltet euch an die Discord- und Epic-Games-AGBs. Verstöße → Bann.",
             inline=False
         )
         rules_embed.add_field(
             name="5) Cheating",
-            value="• Gaining an unfair advantage over others is strictly prohibited. For example, do not share your playtime proof with others or attempt to bypass the verification system. Doing so will result in a ban. All giveaway winners will be manually verified after the draw – cheating will not be successful.",
+            value="• Kein unfairer Vorteil erlaubt (z. B. System austricksen). Alle Gewinner werden manuell geprüft.",
             inline=False
         )
         # --- END OF RULES MESSAGE ---
@@ -167,58 +168,50 @@ if __name__ == "__main__":
 
         support_embed = discord.Embed(
             title="Play2Earn Ticketsystem",
-            description="Here you can contact support for any concerns.\n"
-                        "For public questions you can also use the `#ask-a-mod` channel.",
+            description="Hier kannst du den Support kontaktieren.\n"
+                        "Für öffentliche Fragen nutze den `#ask-a-mod` Kanal.",
             color=discord.Color.green()
         )
 
-        
-
         support_view = SupportView()
 
-
-        # --- END OF SUPPORT MESSAGE ---
-
-
-        
-        # --- CREATORS MESSAGE ---
+        # ------------------ CREATOR PROGRAMM ------------------
 
         creator_embed = discord.Embed(
             title="",
-            description="### 🤝 Content Creator Partnership – Earn with the Play2Earn 1v1 Map",
+            description="### 🤝 Content Creator Partnerschaft – Verdiene mit der Play2Earn 1v1 Map",
             color=discord.Color.gold()
         )
         creator_embed.add_field(name="\n", value="", inline=False)
         creator_embed.add_field(
-            name="💰 Earn by Sharing",
+            name="💰 Verdienen durch Teilen",
             value=(
-                "You're invited to become a **partnered content creator** with Play2Earn!\n\n"
-                "- **35%** of all income from players who join via your Discord invite **goes to you**\n"
-                "- **5%** supports the project\n"
-                "- **60%** is reinvested into **community giveaways**\n"
-                "*Estimated: 1 hour of playtime = approx. **$0.05** (subject to change)*\n"
+                "Werde **Partner-Content-Creator** mit Play2Earn!\n\n"
+                "- **35 %** der Einnahmen von Spielern, die über deinen Invite kommen, **gehen an dich**\n"
+                "- **5 %** für Projektentwicklung, Marketing & Wartung\n"
+                "- **60 %** für Community-Giveaways\n"
+                "*Schätzung: 1 Stunde Spielzeit = ca. **$0.05***"
             ),
             inline=False
         )
         creator_embed.add_field(name="\n", value="", inline=False)
         creator_embed.add_field(
-            name="✅ How to Get Started",
+            name="✅ So startest du",
             value=(
-                "**1.** Open a **support ticket** in the `#support` channel and let us know that you're interested in joining the Content Creator Program\n"
-                "**2.** Create a **permanent invite link** to the Play2Earn 1v1 Discord Server\n"
-                "**3.** **Share your invite link and promote the map to your community**\n"
-                "**4.** **Track your referrals** using the `!creator` command in the same support ticket\n"
-                "**5.** **Request payout** anytime in the same support ticket"
+                "**1.** Öffne ein **Support-Ticket** im `#support` Kanal\n"
+                "**2.** Erstelle einen **dauerhaften Invite-Link** zum Server\n"
+                "**3.** Teile deinen Link und promote die Map\n"
+                "**4.** Verfolge deine Einladungen und Earnings mit dem `!creator` Befehl\n"
+                "**5.** Beantrage deine Auszahlung jederzeit im Ticket"
             ),
             inline=False
         )
         creator_embed.add_field(name="\n", value="", inline=False)
         creator_embed.add_field(
-            name="🌟 Why This Matters",
+            name="🌟 Warum das wichtig ist",
             value=(
-                "Play2Earn isn’t just another random 1v1 Map — it’s a **movement to reshape Fortnite’s creator economy**.\n"
-                "We're building a fairer system where **everyone** can benefit — not just the top few.\n\n"
-                "Join us in leading this shift!"
+                "Play2Earn ist mehr als nur eine Map – es ist eine **Bewegung** für ein faires Fortnite-Ökosystem.\n"
+                "Hilf mit, dieses System zu verändern!"
             ),
             inline=False
         )
@@ -230,9 +223,11 @@ if __name__ == "__main__":
     
         if sys.argv[1] == "XXXsendXXX": # sends annoying notification to all users
             #await welcome_channel.send(embed=giveaway_embed)
+            #await welcome_channel.send(embed=syc_embed, view=syc_view)
             #await rules_channel.send(embed=rules_embed)
             #await support_channel.send(embed=support_embed, view=support_view)
             #await creator_channel.send(embed=creator_embed)
+            
             pass
         elif sys.argv[1] == "edit":
             welcome_message = await welcome_channel.fetch_message(WELCOME_MESSAGE_ID)
@@ -248,15 +243,79 @@ if __name__ == "__main__":
             await creator_message.edit(embed=creator_embed)
             print("✅ Messages edited successfully!")
     
-        print("✅ Messages sent!")
+        print("✅ Messages sent by Play2Earn Bot!")
         await play2earn_bot.close()
 
 
 
+
+
+
+
+    @bot.event
+    async def on_ready():
+
+        # --- SUPPORTYOURCREATOR MESSAGE ---
+
+
+        syc_embed = discord.Embed(
+            title="✅ Willkommen beim Verifizierungssystem!",
+            description="Hier kannst du deine Nachweise hochladen. Klicke auf **Beweis senden**, um zu starten!",
+            color=discord.Color.blue()
+        )
+        syc_view = Welcome2SubmitView()
+
+        # --- END OF SUPPORTYOURCREATOR MESSAGE ---
+
+
+        
+        # --- GIVEAWAY MESSAGE ---
+
+        giveaway_embed = discord.Embed(
+            title="🎁 Giveaway 🎁!",
+            description="\nKlicke auf ✋ um teilzunehmen!\n",
+            color=discord.Color.gold()
+        )
+        giveaway_embed.set_footer(text="Danke für deinen Support! ❤️")       
+
+        # --- END OF GIVEAWAY MESSAGE ---
+
+        
+
+        welcome_channel = bot.get_channel(WELCOME_CHANNEL_ID)
+        giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
+        
+        if sys.argv[1] == "XXXsendXXX": # sends annoying notification to all users
+            await welcome_channel.send(embed=syc_embed, view=syc_view)
+            #giveaway_message = await giveaway_channel.send(embed=giveaway_embed)
+            #await giveaway_message.add_reaction("✋")
+
+            pass
+        elif sys.argv[1] == "edit":
+            syc_message = await welcome_channel.fetch_message(SYC_MESSAGE_ID)
+            await syc_message.edit(embed=syc_embed, view=syc_view)
+
+            giveaway_message = await giveaway_channel.fetch_message(GIVEAWAY_MESSAGE_ID)
+            await giveaway_message.edit(embed=giveaway_embed)
+
+            
+            print("✅ Messages edited successfully!")
+
+
+        print("✅ Messages sent by SYC Bot!")
+        await bot.close()
+        
+
+
+
+    
+    def run_bot(bot, token):
+        bot.run(token)
+
     
     
 
-    ENVIRONMENT = "production" #"development"
+    ENVIRONMENT = "development" #"development"
 
     if ENVIRONMENT == "production":
         GUILD_ID = 1350609155525967892 # Play2Earn 1v1 Discord Server
@@ -272,8 +331,19 @@ if __name__ == "__main__":
 
         CREATORS_CHANNEL_ID = 1354815281528176862
         CREATORS_MESSAGE_ID = 1354820458461266203
+
+
+
+        CURRENT_POOL_CHANNEL_ID = 1354449930323886266
         
-        play2earn_bot.run(os.getenv("DISCORD_TOKEN_PLAY2EARN_PROD"))
+        SYC_MESSAGE_ID = 000 # in welcome channel
+
+        GIVEAWAY_MESSAGE_ID = 000 # in giveaway channel
+
+        token = os.getenv("DISCORD_TOKEN_PROD")
+        p2e_token = os.getenv("DISCORD_TOKEN_PLAY2EARN_PROD")
+        
+        
     elif ENVIRONMENT == "development":
         GUILD_ID = 1329571928482250834 # SYC Dev Discord Server
         WELCOME_CHANNEL_ID = 1338874327650533397
@@ -287,8 +357,32 @@ if __name__ == "__main__":
 
         CREATORS_CHANNEL_ID = 000
         CREATORS_MESSAG_ID = 000
+
+        CURRENT_POOL_CHANNEL_ID = 1354237265055842426
+
+        SYC_MESSAGE_ID = 000 # in welcome channel
+
+        GIVEAWAY_MESSAGE_ID = 000 # in giveaway channel
         
-        play2earn_bot.run(TOKEN_play2earn)
+        token = os.getenv("DISCORD_TOKEN_DEV")
+        p2e_token = os.getenv("DISCORD_TOKEN_PLAY2EARN_DEV")
+
+
+    p1 = Process(target=run_bot, args=(bot, token))
+    p2 = Process(target=run_bot, args=(play2earn_bot, p2e_token))
+    p1.start()
+    p2.start()
+    p1.join()
+    p2.join()
+
+
+    
+
+
+
+
+
+
 
 
 

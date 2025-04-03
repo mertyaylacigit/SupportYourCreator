@@ -47,10 +47,8 @@ attributes_list = [
     "discord_id",
     "discord_name",
     "dm_link",
-    "epic_name",
-    "timestamp_epic_name",
     "images",  # List of images
-    "step_state",  # [epic_name, image_proof] - Tracks user progress.
+    "step_state",  # [image_proof] - Tracks user progress. Always image proof. I removed video and epic verification
     "points_assigned",
     "invite"
 ]
@@ -71,7 +69,7 @@ def initialize_key(discord_id):
         user_data = {attr: None for attr in attributes_list}
         user_data["discord_id"] = str(discord_id)
         user_data["images"] = []  # Initialize empty images list
-        user_data["step_state"] = "epic_name"  # The user's next step is to enter their Epic Games name
+        user_data["step_state"] = "image_proof"  # The user's next step is to submit proof
         user_data["invite"] = {"used_code": None, "inviter_id": None, "invited_users": [], "total_invites": 0}
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(user_data, file, indent=4)
@@ -154,7 +152,7 @@ def save_user_data(discord_id, data, only_local=False, loop=None):
 
 # ✅ Save DM link
 def save_dm_link_to_database(discord_id, discord_name, dm_link):
-    """Saves the Epic Games ID for a user."""
+    """Saves the dm link for a user."""
     initialize_key(discord_id)  # Ensure user file exists
     user_data = load_user_data(discord_id)  # Load current data
 
@@ -162,26 +160,8 @@ def save_dm_link_to_database(discord_id, discord_name, dm_link):
     user_data["dm_link"] = dm_link 
 
     save_user_data(discord_id, user_data)  # Save back to file
-    logger.info(f"✅ Saved Epic Games ID for user {discord_id}")
+    logger.info(f"✅ Saved dml link for user {discord_id}")
 
-# ✅ Save Epic Games ID
-def save_epic_name_to_database(discord_id, epic_name):
-    """Saves the Epic Games ID for a user."""
-    initialize_key(discord_id)  # Ensure user file exists
-    user_data = load_user_data(discord_id)  # Load current data
-
-    if (user_data["epic_name"] is None):
-        user_data["epic_name"] = str(epic_name)
-        user_data["timestamp_epic_name"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        user_data["step_state"] = "image_proof"  # The user's next step is to upload image proof
-        
-    else: # user proofed already epic name
-        logger.info(f"❌ User {discord_id} already proofed their Epic Games name {user_data['epic_name']}")
-        return False
-
-    save_user_data(discord_id, user_data)  # Save back to file
-    logger.info(f"✅ Saved Epic Games ID for user {discord_id}")
-    return True
 
 # ✅ Save Image Proof
 async def save_image_proof_decision(discord_id, image_url, decision):
@@ -308,8 +288,6 @@ async def create_table():
                 discord_id TEXT PRIMARY KEY,
                 discord_name TEXT,
                 dm_link TEXT,
-                epic_name TEXT,
-                timestamp_epic_name TEXT,
                 images JSONB,
                 step_state TEXT,
                 points_assigned INTEGER DEFAULT 0,
@@ -328,8 +306,6 @@ async def restore_filesystem_from_db():
                 "discord_id": row["discord_id"],
                 "discord_name": row["discord_name"],
                 "dm_link": row["dm_link"],
-                "epic_name": row["epic_name"],
-                "timestamp_epic_name": row["timestamp_epic_name"],
                 "images": json.loads(row["images"]),
                 "step_state": row["step_state"],
                 "points_assigned": row["points_assigned"],
@@ -356,8 +332,6 @@ async def restore_user_from_db(discord_id: int):
             "discord_id": row["discord_id"],
             "discord_name": row["discord_name"],
             "dm_link": row["dm_link"],
-            "epic_name": row["epic_name"],
-            "timestamp_epic_name": row["timestamp_epic_name"],
             "images": json.loads(row["images"]),
             "step_state": row["step_state"],
             "points_assigned": row["points_assigned"],
@@ -379,13 +353,11 @@ async def save_user_data_to_pg(discord_id, data):
         async with PG_SEMAPHORE:
             async with db_pool.acquire() as conn:
                 await conn.execute(f"""
-                    INSERT INTO {DB_TABLE} (discord_id, discord_name, dm_link, epic_name, timestamp_epic_name, images, step_state, points_assigned, invite)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    INSERT INTO {DB_TABLE} (discord_id, discord_name, dm_link, images, step_state, points_assigned, invite)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ON CONFLICT (discord_id) DO UPDATE SET
                         discord_name = EXCLUDED.discord_name,
                         dm_link = EXCLUDED.dm_link,
-                        epic_name = EXCLUDED.epic_name,
-                        timestamp_epic_name = EXCLUDED.timestamp_epic_name,
                         images = EXCLUDED.images,
                         step_state = EXCLUDED.step_state,
                         points_assigned = EXCLUDED.points_assigned,
@@ -394,8 +366,6 @@ async def save_user_data_to_pg(discord_id, data):
                     str(discord_id),
                     data["discord_name"],
                     data["dm_link"],
-                    data["epic_name"],
-                    data["timestamp_epic_name"],
                     json.dumps(data["images"]),
                     data["step_state"],
                     data.get("points_assigned", 0),
@@ -439,7 +409,7 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 2 and sys.argv[1] == "populate":
         for i in range(1, int(sys.argv[2]) + 1):
-            save_epic_name_to_database(i, f"discord_name_{i}", f"epic_name_{i}")
+            pass
 
     elif len(sys.argv) > 1 and sys.argv[1] == "getkey":
         logger.info(load_user_data("99998"))

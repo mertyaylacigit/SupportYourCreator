@@ -157,18 +157,18 @@ async def creator(ctx):
     content_creator_role = discord.utils.get(member.roles, name="Content Creator")
     if not content_creator_role:
         contentcreator = discord.utils.get(guild.roles, name="Content Creator")
-        await ctx.send(f"❌ You don't have the {contentcreator.mention} role.")
+        await ctx.send(f"❌ Du hast nicht die {contentcreator.mention} Rolle.")
         return
 
     # ✅ Load inviter data
     inviter_data = load_user_data(member.id)
     if not inviter_data:
-        await ctx.send("❌ Error occured. Wait for a Mod")
+        await ctx.send(f"❌ Fehler. Warte auf einen Mod {discord.utils.get(guild.roles, name='Mod').mention}")
         return
 
     invited_user_ids = inviter_data.get("invite", {}).get("invited_users", [])
     if not invited_user_ids:
-        await ctx.send("ℹ️ You haven't invited any users yet.")
+        await ctx.send("ℹ️ Du hast noch keine erfolgreichen Einladungen.")
         return
 
     successful_invites = len(invited_user_ids)
@@ -188,11 +188,11 @@ async def creator(ctx):
         title="📊 Your Invite Stats",
         color=discord.Color.green()
     )
-    embed.add_field(name=f"🔗 Successful Invites: {str(successful_invites)}", value="", inline=False)
-    embed.add_field(name=f"🕒 Total Minutes Played by Your Invites: {short_int(total_minutes)} minutes", value="", inline=False)
-    embed.add_field(name=f"💵 Your Earnings: **${earnings}**",
-                    value=f"Calculation: ({total_minutes} mins ÷ 60) × $0.05 = **${earnings}**   based on $0.05/hour", inline=False)
-    embed.set_footer(text="Thank you for supporting the project! ❤️")
+    embed.add_field(name=f"🔗 Erfolgreiche Einladungen: {str(successful_invites)}", value="", inline=False)
+    embed.add_field(name=f"🕒 Gesamte Spielzeit durch Einladungen: {short_int(total_minutes)} Minuten", value="", inline=False)
+    embed.add_field(name=f"💵 Deine Earnings: **${earnings}**",
+                    value=f"Berechnung: ({total_minutes} mins ÷ 60) × $0.05 = **${earnings}**   basierend auf $0.05/hour", inline=False)
+    embed.set_footer(text="Danke fürs Unterstüzen des Projektes! ❤️")
 
     await ctx.send(embed=embed)
     
@@ -202,13 +202,13 @@ async def creator(ctx):
 @play2earn_bot.event
 async def on_member_join(member):
     global invites
-    
-    role = discord.utils.get(member.guild.roles, name="Bronze")
+
+    role = discord.utils.get(member.guild.roles, name="Neu")
     if role:
         await member.add_roles(role)
-        logger.info(f"✅ Assigned Bronze role to {member.display_name}")
+        logger.debug(f"✅ Assigned Neu role to {member.display_name}")
     else:
-        logger.warning(f"❌ Bronze role not found in {member.guild.name}")
+        logger.warning(f"❌ Neu role not found in {member.guild.name}")
 
     guild = member.guild
     new_invites = await guild.invites()
@@ -241,7 +241,7 @@ async def on_member_join(member):
 
         if owner_role:
             invite_channel = play2earn_bot.get_channel(INVITE_CHANNEL_ID)
-            await invite_channel.send(f"{member.mention} joined the server.")
+            await invite_channel.send(f"{member.mention} ist dem Server beigetreten.")
         else:
             invite_channel = play2earn_bot.get_channel(INVITE_CHANNEL_ID)
             
@@ -250,13 +250,13 @@ async def on_member_join(member):
             if content_creator_role:
                 # 🎥 Special message for content creators
                 await invite_channel.send(
-                    f"The Content Creator {inviter_member.mention} invited {member.mention} and now has "
-                    f"**{inviter_total_invites}** successful invites!"
+                    f"Der Content Creator {inviter_member.mention} invited {member.mention} und hat jetzt "
+                    f"**{inviter_total_invites}** erfolgreiche Einladungen!"
                 )
             else:
                 await invite_channel.send(f"{used_invite.inviter.mention} invited {member.mention} "
-                                          f"and now has {inviter_total_invites} invites, thus **{inviter_total_invites*1}x** "
-                                          f"more chance to win the giveaway!")
+                                          f"und hat jetzt {inviter_total_invites} Einladungen und somit **{inviter_total_invites*1}x** "
+                                          f"mehr Gewinnchance für das Giveaway!")
                 inviter_role = discord.utils.get(member.guild.roles, name="Inviter")
                 if inviter_role:
                     inviter_member = guild.get_member(inviter_id)
@@ -285,17 +285,17 @@ async def on_member_remove(member):
         owner_role = discord.utils.get(inviter_member.roles, name="Owner")
 
         if owner_role:
-            await invite_channel.send(f"{member.mention} left the server.")
+            await invite_channel.send(f"{member.mention} hat den Server verlassen.")
         else:
             content_creator_role = discord.utils.get(inviter_member.roles, name="Content Creator")
             if content_creator_role:
                 # 🎥 Special message for content creators
-                await invite_channel.send(f"{member.mention} left the channel and the Content Creator {inviter_member.mention} now has "
-                      f"**{inviter_total_invites}** successful invites.")
+                await invite_channel.send(f"{member.mention} hat den Server verlassen. Der Content Creator {inviter_member.mention} hat jetzt "
+                      f"**{inviter_total_invites}** erfolgreiche Einladungen.")
             else:
-                await invite_channel.send(f"{member.mention} left the channel and the inviter {inviter_member.mention} now has "
-                                          f"{inviter_total_invites} invites, thus **{inviter_total_invites*1}x** "
-                                          "more chance to win the giveaway!")
+                await invite_channel.send(f"{member.mention} hat den Server verlassen. Der Inviter {inviter_member.mention} hat jetzt "
+                                          f"{inviter_total_invites} Einladungen und somit **{inviter_total_invites*1}x** "
+                                          "mehr Gewinnchance für das Giveaway!")
                 
     
     invite_user_map.pop(member.id, None)
@@ -304,12 +304,12 @@ async def on_member_remove(member):
 @play2earn_bot.event
 async def on_invite_create(invite):
     invites.setdefault(invite.guild.id, {})[invite.code] = invite.uses
-    logger.info(f"✅ Invite created: {invite.code}")
+    logger.debug(f"✅ Invite created: {invite.code}")
 
 @play2earn_bot.event
 async def on_invite_delete(invite):
     invites.get(invite.guild.id, {}).pop(invite.code, None)
-    logger.info(f"✅ Invite deleted: {invite.code}")
+    logger.debug(f"✅ Invite deleted: {invite.code}")
 
 
 class SupportView(View):
@@ -329,7 +329,7 @@ class SupportView(View):
 
         if existing_thread:
             await interaction.response.send_message(
-                f"❗ You already have an open Support-Thread: {existing_thread.mention}",
+                f"❗ Du hast schon einen Support Ticket: {existing_thread.mention}",
                 ephemeral=True
             )
             return
@@ -344,6 +344,6 @@ class SupportView(View):
         await thread.add_user(user)
 
         await thread.send(f"👋 {user.mention} - {discord.utils.get(guild.roles, name='Mod').mention} \n" 
-                           "What is your concern?")
-        await interaction.response.send_message(f"✅ Your support ticket has been created! {thread.mention}", ephemeral=True)
+                           "Was ist dein Anliegen?")
+        await interaction.response.send_message(f"✅ Dein Support Ticket wurde erstellt! {thread.mention}", ephemeral=True)
 

@@ -10,10 +10,7 @@ channel = "stable-23_05"
 run = ["sh", "-c", "export ENVIRONMENT=production ; python main.py"]
 deploymentTarget = "gce"
 build = ["sh", "-c", "pip install -r requirements.txt"]
-
-[[ports]]
-localPort = 8080
-externalPort = 80
+ignorePorts = true
 
 [workflows]
 runButton = "run main in development environment"
