@@ -14,7 +14,7 @@ from discord.ext import commands
 from discord.ui import Button, View
 from config import GUILD_ID, TOKEN, GIVEAWAY_CHANNEL_ID
 from config import TOKEN_play2earn, ADMIN_IDs
-from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL
+from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL #, LEADERBOARD_MESSAGE_ID
 from db_handler import db_pool, DB_DIR, initialize_key, load_user_data, restore_user_from_db, init_pg, save_dm_link_to_database
 from db_handler import save_image_proof_decision
 from queues import RateLimitQueue, CpuIntensiveQueue
@@ -96,16 +96,17 @@ async def on_message(message):
                             # ✅ Antwort an den Benutzer basierend auf der Entscheidung
                             if decision["valid_hash"]:
                                 giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
-                                if user_data["points_assigned"] is None: # inital points_assigned = None so only change permission the first time
+                                if user_data["played_minutes"] == 0: # inital played_minutes = 0 so only change permission the first time
                                     await rate_limiter.add_request(giveaway_channel.set_permissions, (message.author,), {"read_messages": True})
 
                                 time_x = 1 + decision['played_time'] / 60
                                 invites_x = user_data["invite"]["total_invites"]
+                                creatorcode_x = user_data["creator_code"]
                                 
                                 embed = discord.Embed(
                                     description="**✅ Dein Nachweis wurde akzeptiert!**\n\n" +
                                                 f"Gesamte Spielzeit: **{decision['played_time']} Minuten**\n" +
-                                                f"Deine Gewinnchance: **{(time_x + (invites_x*1)):.2f}x** ({time_x:.2f}x durch Spielzeit + {(invites_x*1):.2f}x durch Einladungen)\n\n" +
+                                                f"Deine Gewinnchance: **{(time_x + (invites_x*1) + (creatorcode_x*1)):.2f}x** ({time_x:.2f}x durch Spielzeit + {(invites_x*1)}x durch Einladungen + {(creatorcode_x*1)}x durch Creator Code)\n\n" +
                                                 f"**Reagiere auf das ✋ Emoji in dem Gewinnspiel-Channel: {giveaway_channel.mention}**",
                                     color=discord.Color.green()
                                 )
@@ -147,6 +148,8 @@ async def on_message(message):
                                 )
 
                             await rate_limiter.add_request(message.channel.send, (), {"embed": embed})
+
+                            
                             return
                         
 
@@ -188,6 +191,14 @@ async def on_ready():
     logger.info("✅SupportYourCreator Bot is ready!")
 
 
+
+
+
+def calculate_total_chance(played_minutes: int, invites: int, creator_code: int) -> float:
+    chance = 1 + (played_minutes / 60) + invites + creator_code
+    return round(chance, 2)
+
+
 def is_admin_user():
     async def predicate(interaction: discord.Interaction) -> bool:
         return interaction.user.id in ADMIN_IDs
@@ -211,9 +222,30 @@ async def giveaway(interaction: discord.Interaction, message_id:str,  anzahl_gew
     
     giveaway_message = await rate_limiter.add_request(giveaway_channel.fetch_message, (int(message_id),), {})
 
+    # TODO: REMOVE HARDCODED GIVEAWAY
+    faygral = await bot.fetch_user(1352680582165037127)
+    resox = await bot.fetch_user(1167383273903771668)
+    
+    embed = discord.Embed(
+        title="🎉 Gewinner des Giveaways!",
+        description=("Glückwunsch an folgende Gewinner:\n" +
+                     f"\n 1. {faygral.mention} 🥳" +
+                     f"\n 2. {resox.mention} 🥳"
+                    ),
+
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Danke für deinen Support! ❤️")
+
+    await rate_limiter.add_request(interaction.response.send_message, (), 
+        {"embed": embed})
+    logger.info("✅ Giveaway results sent.")
+    return
+    
+
     # Gather participants
     participants = []
-    total_points = 0
+    total_chance = 0
     user_weights = []  
 
     with_populated = False
@@ -224,11 +256,11 @@ async def giveaway(interaction: discord.Interaction, message_id:str,  anzahl_gew
                 file_path = os.path.join("data", file_name)
                 with open(file_path, "r", encoding="utf-8") as file:
                     user_data = json.load(file)
-                    if user_data and user_data.get("points_assigned"):
-                        points = user_data["points_assigned"]
+                    if user_data:
+                        chance = calculate_total_chance(user_data["played_minutes"], user_data["invite"]["total_invites"], user_data["creator_code"]) 
                         participants.append(user_data["discord_id"])
-                        user_weights.append(points)
-                        total_points += points
+                        user_weights.append(chance)
+                        total_chance += chance
     
     else: 
         for reaction in giveaway_message.reactions:    # FOR USERS THAT HAVE REACTED/ ACCESS TO GIVEAWAY
@@ -238,13 +270,13 @@ async def giveaway(interaction: discord.Interaction, message_id:str,  anzahl_gew
                 if user.bot:  # Skip the bot itself
                     continue
     
-                # Retrieve the user's points_assigned from the database
+                # Retrieve the user's chance from the database
                 user_data = load_user_data(user.id)
-                if user_data and user_data.get("points_assigned"):
-                    points = user_data["points_assigned"]
-                    participants.append(user)
-                    user_weights.append(points)
-                    total_points += points
+                if user_data:
+                    chance = calculate_total_chance(user_data["played_minutes"], user_data["invite"]["total_invites"], user_data["creator_code"]) 
+                    participants.append(user_data["discord_id"])
+                    user_weights.append(chance)
+                    total_chance += chance
 
     if len(participants) < anzahl_gewinner:
         await rate_limiter.add_request(interaction.response.send_message, (), 

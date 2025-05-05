@@ -49,8 +49,9 @@ attributes_list = [
     "dm_link",
     "images",  # List of images
     "step_state",  # [image_proof] - Tracks user progress. Always image proof. I removed video and epic verification
-    "points_assigned",
-    "invite"
+    "played_minutes",
+    "invite",
+    "creator_code"
 ]
 
 # GET
@@ -70,7 +71,9 @@ def initialize_key(discord_id):
         user_data["discord_id"] = str(discord_id)
         user_data["images"] = []  # Initialize empty images list
         user_data["step_state"] = "image_proof"  # The user's next step is to submit proof
+        user_data["played_minutes"] = 0
         user_data["invite"] = {"used_code": None, "inviter_id": None, "invited_users": [], "total_invites": 0}
+        user_data["creator_code"] = 0
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(user_data, file, indent=4)
 
@@ -116,6 +119,41 @@ async def async_upload_to_object_storage(file_path, medium_name):
             logger.info(f"✅ Asynchronously uploaded {medium_name} to object storage.")
         except Exception as e:
             logger.info(f"❌ Failed to upload {medium_name} to object storage: {e}")
+
+
+def get_leaderboard_top_users(limit=99):
+    """
+    Returns top users from the local filesystem database, sorted by total_chance.
+    """
+    leaderboard = []
+
+    for filename in os.listdir(DB_DIR):
+        if filename.endswith(".json"):
+            filepath = os.path.join(DB_DIR, filename)
+            with open(filepath, "r", encoding="utf-8") as file:
+                user_data = json.load(file)
+
+                discord_name = user_data.get("discord_name")
+                played_minutes = user_data.get("played_minutes")
+                invites = user_data.get("invite", {}).get("total_invites")
+                creator_code = user_data.get("creator_code")
+                # Berechnung der total_chance (1 + played/60 + invites + creator_code)
+                total_chance = round(1 + (played_minutes / 60) + invites + creator_code, 2)
+                if discord_name is not None:
+                    leaderboard.append({
+                        "discord_id": user_data.get("discord_id"),
+                        "name": discord_name,
+                        "total_chance": total_chance,
+                        "played_minutes": played_minutes,
+                        "invites": invites,
+                        "creator_code": creator_code
+                    })
+     
+    # Sortiere nach total_chance absteigend
+    leaderboard.sort(key=lambda u: u["total_chance"], reverse=True)
+
+    return leaderboard[:limit]
+
 
 # END OF GET
 
@@ -188,7 +226,7 @@ async def save_image_proof_decision(discord_id, image_url, decision):
     elif "valid_hash" in decision and "played_time" in decision:
         # ✅ Update user progress state
         if decision["valid_hash"]:
-            user_data["points_assigned"] = decision["played_time"]  # Grant points based on playtime
+            user_data["played_minutes"] = decision["played_time"]  # Grant points based on playtime
         
         user_data["step_state"] = "image_proof"
     
@@ -290,8 +328,9 @@ async def create_table():
                 dm_link TEXT,
                 images JSONB,
                 step_state TEXT,
-                points_assigned INTEGER DEFAULT 0,
-                invite JSONB
+                played_minutes INTEGER DEFAULT 0,
+                invite JSONB,
+                creator_code INTEGER DEFAULT 0
             )
         """)
     logger.info("✅ Database table ensured.")
@@ -308,8 +347,9 @@ async def restore_filesystem_from_db():
                 "dm_link": row["dm_link"],
                 "images": json.loads(row["images"]),
                 "step_state": row["step_state"],
-                "points_assigned": row["points_assigned"],
-                "invite": json.loads(row["invite"])
+                "played_minutes": row["played_minutes"],
+                "invite": json.loads(row["invite"]),
+                "creator_code": row["creator_code"]
             }
 
             # ✅ Save user data in the filesystem
@@ -334,8 +374,9 @@ async def restore_user_from_db(discord_id: int):
             "dm_link": row["dm_link"],
             "images": json.loads(row["images"]),
             "step_state": row["step_state"],
-            "points_assigned": row["points_assigned"],
-            "invite": json.loads(row["invite"])
+            "played_minutes": row["played_minutes"],
+            "invite": json.loads(row["invite"]),
+            "creator_code": row["creator_code"]
         }
 
         # ✅ Save user data in the filesystem
@@ -353,23 +394,25 @@ async def save_user_data_to_pg(discord_id, data):
         async with PG_SEMAPHORE:
             async with db_pool.acquire() as conn:
                 await conn.execute(f"""
-                    INSERT INTO {DB_TABLE} (discord_id, discord_name, dm_link, images, step_state, points_assigned, invite)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    INSERT INTO {DB_TABLE} (discord_id, discord_name, dm_link, images, step_state, played_minutes, invite, creator_code)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ON CONFLICT (discord_id) DO UPDATE SET
                         discord_name = EXCLUDED.discord_name,
                         dm_link = EXCLUDED.dm_link,
                         images = EXCLUDED.images,
                         step_state = EXCLUDED.step_state,
-                        points_assigned = EXCLUDED.points_assigned,
-                        invite = EXCLUDED.invite
+                        played_minutes = EXCLUDED.played_minutes,
+                        invite = EXCLUDED.invite,
+                        creator_code = EXCLUDED.creator_code
                 """, 
                     str(discord_id),
                     data["discord_name"],
                     data["dm_link"],
                     json.dumps(data["images"]),
                     data["step_state"],
-                    data.get("points_assigned", 0),
-                    json.dumps(data["invite"])
+                    data.get("played_minutes", 0),
+                    json.dumps(data["invite"]),
+                    data.get("creator_code", 0),
                 )
     
                 logger.debug(f"save_user_data_to_pg() executed for user {discord_id}")

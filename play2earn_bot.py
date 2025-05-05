@@ -1,4 +1,5 @@
 import discord
+from discord.ext import tasks
 import os 
 import sys
 import shutil
@@ -11,8 +12,9 @@ import aiohttp
 from datetime import datetime
 from discord.ext import commands
 from discord.ui import Modal, TextInput, Button, View
-from config import LOGGING_LEVEL, INVITE_CHANNEL_ID, MEMBERS_STATS_ID, MINUTES_PLAYED_ID,  PRICE_POOL_ID, GUILD_ID
+from config import LEADERBOARD_CHANNEL_ID, LEADERBOARD_MESSAGE_ID, LOGGING_LEVEL, INVITE_CHANNEL_ID, MEMBERS_STATS_ID, MINUTES_PLAYED_ID,  PRICE_POOL_ID, GUILD_ID
 from db_handler import load_user_data, save_invite_join_to_database, save_invite_remove_to_database, restore_invite_user_map, init_pg
+from db_handler import get_leaderboard_top_users
 
 # DANGER: TODO For scalability: Here I dont use API rate limiter 
 
@@ -47,6 +49,7 @@ async def on_ready():
     await init_pg()
     logger.info("✅ Connected to PostgreSQL in play2earn_bot process.")
 
+    
     for guild in play2earn_bot.guilds:
         invite_list = await guild.invites()
         invites[guild.id] = {invite.code: invite.uses for invite in invite_list}
@@ -58,8 +61,68 @@ async def on_ready():
     #asyncio.create_task(update_minutes_pricepool_stats()) # commented because not actual total minutes but submited proof total minutes
                                                            # for now I will update the total minutes and price pool manually 
     asyncio.create_task(update_members_stats())
+    asyncio.create_task(update_leaderboard_loop()) 
+
+    logger.info("⏱️ Started automatic leaderboard updates every x seconds.")
 
     logger.info("✅Play2Earn Bot is ready!")
+
+
+async def update_leaderboard_loop():
+    await play2earn_bot.wait_until_ready()
+    while not play2earn_bot.is_closed():
+        try:
+            await update_leaderboard()
+        except Exception as e:
+            logger.error(f"❌ leaderboard update failed: {e}")
+        await asyncio.sleep(6)  # or whatever interval you want
+
+
+async def update_leaderboard():
+    def escape_discord_markdown(text: str) -> str:
+        """Escapes Discord markdown characters to prevent formatting."""
+        escape_chars = ['\\', '*', '_', '~', '`', '|', '>']
+        for char in escape_chars:
+            text = text.replace(char, f"\\{char}")
+        return text
+
+
+    leaderboard_raw = get_leaderboard_top_users(limit=99)
+
+    # Filter out users with embedded tags
+    leaderboard = [
+        user for user in leaderboard_raw
+        if "XOWNERX" not in user['name'] and "XCONTENTCREATORX" not in user['name']
+    ]
+
+    # Header lines
+    lines = [
+        " \# | Name |🎲 Gewinnchance |⏱ Spielzeit |🔗 Einladungen | ✅ Creator Code\n"
+    ]
+
+    # Row lines
+    for i, user in enumerate(leaderboard, 1):
+        raw_name = user['name'][:9]  if len(user['name']) > 10 else user['name']
+        name = escape_discord_markdown(raw_name)
+        lines.append(
+            f"{i:<2} | {name:<10} | **{user['total_chance']:^5}** | {user['played_minutes']:^5} | {user['invites']:^3} | {user['creator_code']:^4}"
+        )
+
+    leaderboard_text = "\n".join(lines)
+
+
+    leaderboard_channel = play2earn_bot.get_channel(LEADERBOARD_CHANNEL_ID)
+    if leaderboard_channel is None:
+        leaderboard_channel = await play2earn_bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
+        logger.debug("✅ Fetched leaderboard channel")
+
+    try:
+        leaderboard_msg = await leaderboard_channel.fetch_message(LEADERBOARD_MESSAGE_ID)
+        await leaderboard_msg.edit(content=f"\n{leaderboard_text}\n")
+        #logger.info("🔁 Leaderboard updated (code block style).")
+    except discord.HTTPException as e:
+        logger.warning(f"❌ Failed to update leaderboard: {e}")
+
 
 
 
@@ -114,8 +177,8 @@ def calculate_total_minutes_played():
         if file.endswith(".json"):
             with open(os.path.join("data", file), "r", encoding="utf-8") as f:
                 user_data = json.load(f)
-                if user_data and "points_assigned" in user_data:
-                    minutes = user_data["points_assigned"]
+                if user_data:
+                    minutes = user_data["played_minutes"]
                     if minutes:
                         total += minutes
     return total
@@ -177,7 +240,7 @@ async def creator(ctx):
     for user_id in invited_user_ids:
         user_data = load_user_data(user_id)
         if user_data:
-            minutes = user_data.get("points_assigned", 0)
+            minutes = user_data.get("played_minutes", 0)
             if minutes:
                 total_minutes += minutes
 
@@ -346,4 +409,14 @@ class SupportView(View):
         await thread.send(f"👋 {user.mention} - {discord.utils.get(guild.roles, name='Mod').mention} \n" 
                            "Was ist dein Anliegen?")
         await interaction.response.send_message(f"✅ Dein Support Ticket wurde erstellt! {thread.mention}", ephemeral=True)
+
+
+
+
+
+
+
+
+
+
 

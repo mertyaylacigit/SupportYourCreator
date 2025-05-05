@@ -5,7 +5,7 @@ import asyncio
 from multiprocessing import Process
 from discord.ext import commands
 from discord.ui import View, Button
-from config import GIVEAWAY_CHANNEL_ID, TOKEN_play2earn
+from config import GIVEAWAY_CHANNEL_ID, SUBMIT_PROOF_CHANNEL_ID, LEADERBOARD_CHANNEL_ID, LEADERBOARD_MESSAGE_ID
 from play2earn_bot import SupportView
 from main import Welcome2SubmitView
 
@@ -39,7 +39,10 @@ if __name__ == "__main__":
         rules_channel = play2earn_bot.get_channel(RULES_CHANNEL_ID)
         support_channel = play2earn_bot.get_channel(SUPPORT_CHANNEL_ID)
         creator_channel = play2earn_bot.get_channel(CREATORS_CHANNEL_ID)
-        print(welcome_channel, rules_channel, support_channel)
+        leaderboard_channel = play2earn_bot.get_channel(LEADERBOARD_CHANNEL_ID)
+
+        submitProof_channel = play2earn_bot.get_channel(SUBMIT_PROOF_CHANNEL_ID)
+        
         if not welcome_channel or not rules_channel or not support_channel:
             print("❌ Channel not found.")
             return
@@ -71,8 +74,8 @@ if __name__ == "__main__":
             value=(
                 "**1.** Spiele die **Play2Earn 1v1** Map\n"
                 "**2.** Drücke den **SUBMIT**-Button in der Map und mache einen Screenshot oder ein Bild mit deinem Handy\n"
-                "**3.** Klicke unten auf `Beweis senden` und gehe dann in die DMs von dem Bot\n"
-                "**4.** Schicke ein Bild von Beweis deiner gespielten Minuten an den Bot\n"
+                f"**3.** Gehe zum **{submitProof_channel.mention}** Channel und drück auf `Beweis senden`\n"
+                "**4.** Schicke ein Bild vom Beweis deiner gespielten Minuten an den Bot\n"
                 "**5.** Danach hast du Zugang auf den `🔒 🎁giveaway🎁` Kanal\n"
                 "**6.** Reagiere dort auf das ✋ Emoji, um beim Giveaway teilzunehmen 🎉"
             ),
@@ -219,14 +222,22 @@ if __name__ == "__main__":
         # --- END OF CREATORS MESSAGE ---
 
 
+
+        # --- LEADERBOARD MESSAGE ---
+
+        leaderboard_msg = "soon"
+
+        # --- END OF LEADERBOARD MESSAGE ---
+
+
         
     
         if sys.argv[1] == "XXXsendXXX": # sends annoying notification to all users
             #await welcome_channel.send(embed=giveaway_embed)
-            #await welcome_channel.send(embed=syc_embed, view=syc_view)
             #await rules_channel.send(embed=rules_embed)
             #await support_channel.send(embed=support_embed, view=support_view)
             #await creator_channel.send(embed=creator_embed)
+            #await leaderboard_channel.send(content=leaderboard_msg)
             
             pass
         elif sys.argv[1] == "edit":
@@ -241,6 +252,10 @@ if __name__ == "__main__":
 
             creator_message = await creator_channel.fetch_message(CREATORS_MESSAGE_ID)
             await creator_message.edit(embed=creator_embed)
+
+            #leaderboard_message = await leaderboard_channel.fetch_message(LEADERBOARD_MESSAGE_ID)
+            #await leaderboard_message.edit(content=leaderboard_msg)
+            
             print("✅ Messages edited successfully!")
     
         print("✅ Messages sent by Play2Earn Bot!")
@@ -280,23 +295,25 @@ if __name__ == "__main__":
 
         # --- END OF GIVEAWAY MESSAGE ---
 
+
         
 
-        welcome_channel = bot.get_channel(WELCOME_CHANNEL_ID)
+        submitProof_channel = bot.get_channel(SUBMIT_PROOF_CHANNEL_ID )
         giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
         
         if sys.argv[1] == "XXXsendXXX": # sends annoying notification to all users
-            await welcome_channel.send(embed=syc_embed, view=syc_view)
+            await submitProof_channel.send(embed=syc_embed, view=syc_view)
             #giveaway_message = await giveaway_channel.send(embed=giveaway_embed)
             #await giveaway_message.add_reaction("✋")
 
             pass
         elif sys.argv[1] == "edit":
-            syc_message = await welcome_channel.fetch_message(SYC_MESSAGE_ID)
+            syc_message = await submitProof_channel.fetch_message(SYC_MESSAGE_ID)
             await syc_message.edit(embed=syc_embed, view=syc_view)
 
             giveaway_message = await giveaway_channel.fetch_message(GIVEAWAY_MESSAGE_ID)
             await giveaway_message.edit(embed=giveaway_embed)
+
 
             
             print("✅ Messages edited successfully!")
@@ -307,7 +324,6 @@ if __name__ == "__main__":
         
 
 
-
     
     def run_bot(bot, token):
         bot.run(token)
@@ -315,7 +331,7 @@ if __name__ == "__main__":
     
     
 
-    ENVIRONMENT = "development" #"development"
+    ENVIRONMENT = "production" #"development"
 
     if ENVIRONMENT == "production":
         GUILD_ID = 1350609155525967892 # Play2Earn 1v1 Discord Server
@@ -335,10 +351,16 @@ if __name__ == "__main__":
 
 
         CURRENT_POOL_CHANNEL_ID = 1354449930323886266
-        
-        SYC_MESSAGE_ID = 000 # in welcome channel
 
-        GIVEAWAY_MESSAGE_ID = 000 # in giveaway channel
+
+        SUBMIT_PROOF_CHANNEL_ID = 1357324254374264873 # overwrtie config.py
+        SYC_MESSAGE_ID = 1357457145502761000 
+
+        GIVEAWAY_CHANNEL_ID = 1351236909770211359
+        GIVEAWAY_MESSAGE_ID = 1352057949115387915 # in giveaway channel
+
+        LEADERBOARD_CHANNEL_ID = 1357395393616543766  # overwrite config.py
+        LEADERBOARD_MESSAGE_ID = 1357455973287198943
 
         token = os.getenv("DISCORD_TOKEN_PROD")
         p2e_token = os.getenv("DISCORD_TOKEN_PLAY2EARN_PROD")
@@ -355,14 +377,15 @@ if __name__ == "__main__":
         SUPPORT_CHANNEL_ID = 1353413783732748420
         SUPPORT_MESSAGE_ID = 1353434582271135874
 
-        CREATORS_CHANNEL_ID = 000
-        CREATORS_MESSAG_ID = 000
+        CREATORS_CHANNEL_ID = 1357399716781883662
+        CREATORS_MESSAGE_ID = 1357399861766389820
+        
 
         CURRENT_POOL_CHANNEL_ID = 1354237265055842426
 
-        SYC_MESSAGE_ID = 000 # in welcome channel
+        SYC_MESSAGE_ID = 1357399061094858783 # in welcome channel
 
-        GIVEAWAY_MESSAGE_ID = 000 # in giveaway channel
+        GIVEAWAY_MESSAGE_ID = 1351559729565925518 # in giveaway channel
         
         token = os.getenv("DISCORD_TOKEN_DEV")
         p2e_token = os.getenv("DISCORD_TOKEN_PLAY2EARN_DEV")
