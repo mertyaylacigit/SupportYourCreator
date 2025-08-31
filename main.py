@@ -12,14 +12,14 @@ from multiprocessing import Process
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import Button, View
-from config import GUILD_ID, TOKEN, GIVEAWAY_CHANNEL_ID
-from config import TOKEN_play2earn, ADMIN_IDs
-from config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL #, LEADERBOARD_MESSAGE_ID
-from db_handler import db_pool, DB_DIR, initialize_key, load_user_data, restore_user_from_db, init_pg, save_dm_link_to_database
-from db_handler import save_image_proof_decision
-from queues import RateLimitQueue, CpuIntensiveQueue
-from ai import check_image
-from play2earn_bot import play2earn_bot
+from src.config import GUILD_ID, TOKEN, GIVEAWAY_CHANNEL_ID
+from src.config import TOKEN_play2earn, ADMIN_IDs
+from src.config import sample_image_urls, creativeMapPlayerTimeURL, LOGGING_LEVEL #, LEADERBOARD_MESSAGE_ID
+from src.db_handler import db_pool, DB_DIR, initialize_key, load_user_data, restore_user_from_db, init_pg, save_dm_link_to_database
+from src.db_handler import save_image_proof_decision
+from src.queues import RateLimitQueue, CpuIntensiveQueue
+from src.ai import check_image
+from src.play2earn_bot import play2earn_bot
 
 
 
@@ -549,7 +549,6 @@ if __name__ == "__main__":
     logger.info("✅⚠️ Discord Bot started")
 
     
-
 
 
 

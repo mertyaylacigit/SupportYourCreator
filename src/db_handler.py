@@ -476,4 +476,3 @@ if __name__ == "__main__":
 
     else:
         logger.info("No argument provided!")
-

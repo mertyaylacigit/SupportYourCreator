@@ -5,8 +5,8 @@ import asyncio
 from multiprocessing import Process
 from discord.ext import commands
 from discord.ui import View, Button
-from config import GIVEAWAY_CHANNEL_ID, SUBMIT_PROOF_CHANNEL_ID, LEADERBOARD_CHANNEL_ID, LEADERBOARD_MESSAGE_ID
-from play2earn_bot import SupportView
+from src.config import GIVEAWAY_CHANNEL_ID, SUBMIT_PROOF_CHANNEL_ID, LEADERBOARD_CHANNEL_ID, LEADERBOARD_MESSAGE_ID
+from src.play2earn_bot import SupportView
 from main import Welcome2SubmitView
 
 if __name__ == "__main__":
@@ -16,14 +16,6 @@ if __name__ == "__main__":
     intents.members = True
     play2earn_bot = commands.Bot(command_prefix="!", intents=intents)
     bot = commands.Bot(command_prefix="!", intents=intents)
-
-    
-
-
-
-
-
-
 
     @play2earn_bot.event
     async def on_ready():
@@ -400,7 +392,6 @@ if __name__ == "__main__":
 
 
     
-
 
 
 
